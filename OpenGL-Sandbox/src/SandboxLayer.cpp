@@ -39,6 +39,17 @@ void SandboxLayer::OnAttach()
   mesh_ = std::move(model_loader_->LoadModel("src/assets/monkey.obj"));
   plane_ = std::move(model_loader_->LoadModel("src/assets/Plane.obj"));
   m_sim = std::make_unique<Simulation>();
+  {
+    // Test scene: a 5x5 patch of strands, starting horizontal so they swing
+    // down under gravity and come to rest hanging.
+    std::vector<EigenVector3> roots;
+    for (int i = 0; i < 5; ++i)
+      for (int j = 0; j < 5; ++j)
+        roots.emplace_back(-0.4 + 0.2 * i, 1.5, -0.4 + 0.2 * j);
+    m_sim->InitHairStrands(roots, EigenVector3(1.0, 0.0, 0.0), 20, 0.05);
+  }
+  m_strand_renderer = std::make_unique<StrandRenderer>();
+  m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
 
   this->kScene = model_loader_->getScene();
 
@@ -109,13 +120,44 @@ void SandboxLayer::OnUpdate(Timestep ts)
   this->plane_->Draw(this->camera_controller_);
   this->line_->DrawDebugLine(this->camera_controller_);
 
-  //this->m_sim->Update();
+  if (m_run_sim) {
+    m_sim->Update(ts.GetSeconds());
+    m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
+  }
+  m_strand_renderer->Draw(camera_controller_);
 }
 
-bool* runSim = false;
-
 void SandboxLayer::OnImGuiRender() {
-	// ImGui here
-  ImGui::Begin("Options");
+  ImGui::Begin("Hair Simulation");
+  ImGui::Checkbox("Run", &m_run_sim);
+  if (ImGui::Button("Step") && !m_run_sim) {
+    m_sim->Step();
+    m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Reset")) {
+    m_sim->Reset();
+    m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
+  }
+
+  ImGui::SliderInt("Iterations", &m_sim->m_iterations_per_step, 1, 50);
+  float damping = static_cast<float>(m_sim->m_damping_coefficient);
+  if (ImGui::SliderFloat("Damping", &damping, 0.0f, 0.2f)) m_sim->m_damping_coefficient = damping;
+  float gravity = static_cast<float>(m_sim->m_gravity_constant);
+  if (ImGui::SliderFloat("Gravity", &gravity, 0.0f, 20.0f)) m_sim->m_gravity_constant = gravity;
+
+  // Stiffness changes the system matrix, so it has to be refactored.
+  bool rebuild = false;
+  float stretch = static_cast<float>(m_sim->m_stiffness_stretch);
+  if (ImGui::SliderFloat("Stretch stiffness", &stretch, 1e3f, 1e7f, "%.0f", 4.0f)) {
+    m_sim->m_stiffness_stretch = stretch;
+    rebuild = true;
+  }
+  float bending = static_cast<float>(m_sim->m_stiffness_bending);
+  if (ImGui::SliderFloat("Bending stiffness", &bending, 1.0f, 1e5f, "%.0f", 4.0f)) {
+    m_sim->m_stiffness_bending = bending;
+    rebuild = true;
+  }
+  if (rebuild) m_sim->RebuildSystemMatrix();
   ImGui::End();
 }

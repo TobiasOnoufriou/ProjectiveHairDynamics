@@ -1,289 +1,125 @@
-#pragma once
 #include "Simulation.h"
-#include <omp.h>
 
-Simulation::Simulation() {
-  std::vector<SparseMatrixTriplet> att_triplets;
+#include <algorithm>
+#include <iostream>
 
-  float av1 = 1;
+Simulation::Simulation()
+    : m_h(1.0 / 60.0),
+      m_particle_mass(1.0),
+      m_gravity_constant(9.81),
+      m_stiffness_attachment(1e6),
+      m_stiffness_stretch(1e6),
+      m_stiffness_bending(5e2),
+      m_damping_coefficient(0.02),
+      m_iterations_per_step(10),
+      m_max_substeps_per_frame(4),
+      m_system_ready(false),
+      m_time_accumulator(0.0) {}
 
-  att_triplets.emplace_back(SparseMatrixTriplet(0, 0, av1));
-  att_triplets.emplace_back(SparseMatrixTriplet(1, 1, av1));
-  att_triplets.emplace_back(SparseMatrixTriplet(2, 2, av1));
-
-  m_A_attachment.resize(3, 3);
-  m_A_attachment.setFromTriplets(att_triplets.begin(), att_triplets.end());
-
-  std::vector<SparseMatrixTriplet> spr_triplets;
-
-  float sv1 = 0.5f;
-  float sv2 = -0.5f;
-
-  spr_triplets.emplace_back(SparseMatrixTriplet(0, 0, sv1));
-  spr_triplets.emplace_back(SparseMatrixTriplet(1, 1, sv1));
-  spr_triplets.emplace_back(SparseMatrixTriplet(2, 2, sv1));
-
-  spr_triplets.emplace_back(SparseMatrixTriplet(0, 3, sv2));
-  spr_triplets.emplace_back(SparseMatrixTriplet(1, 4, sv2));
-  spr_triplets.emplace_back(SparseMatrixTriplet(2, 5, sv2));
-
-  spr_triplets.emplace_back(SparseMatrixTriplet(3, 0, sv2));
-  spr_triplets.emplace_back(SparseMatrixTriplet(4, 1, sv2));
-  spr_triplets.emplace_back(SparseMatrixTriplet(5, 2, sv2));
-
-  spr_triplets.emplace_back(SparseMatrixTriplet(3, 3, sv1));
-  spr_triplets.emplace_back(SparseMatrixTriplet(4, 4, sv1));
-  spr_triplets.emplace_back(SparseMatrixTriplet(5, 5, sv1));
-
-  m_A_spring.resize(6, 6);
-  m_A_spring.setFromTriplets(spr_triplets.begin(), spr_triplets.end());
-
-
-  // Setting B sparse matrix
-  m_B_attachment.resize(3, 3);
-  m_B_attachment = m_A_attachment;
-  
-  m_B_spring.resize(6, 6);
-  m_B_spring = m_A_spring;
-}
-
-SparseMatrix Simulation::CreateSMatrix(Constraint* c) {
-  SparseMatrix s;
-  std::vector<SparseMatrixTriplet> s_triplets;
-
-
-  AttachmentConstraint* ac;
-  if (ac = dynamic_cast<AttachmentConstraint*>(c)) {
-    s_triplets.clear();
-    unsigned int m_p0 = ac->GetConstraintType();
-    s_triplets.emplace_back(SparseMatrixTriplet(0, m_p0 * 3 + 0, 1));
-    s_triplets.emplace_back(SparseMatrixTriplet(1, m_p0 * 3 + 1, 1));
-    s_triplets.emplace_back(SparseMatrixTriplet(2, m_p0 * 3 + 2, 1));
-    s.resize(3, m_mesh->m_system_dimension);
-  }
-  SpringConstraint* sc;
-  if (sc = dynamic_cast<SpringConstraint*>(c)) {
-    s_triplets.clear();
-    unsigned int m_p0 = sc->GetConstrainedVertexIndex1();
-    s_triplets.emplace_back(SparseMatrixTriplet(0, m_p0 * 3 + 0, 1));
-    s_triplets.emplace_back(SparseMatrixTriplet(1, m_p0 * 3 + 1, 1));
-    s_triplets.emplace_back(SparseMatrixTriplet(2, m_p0 * 3 + 2, 1));
-    unsigned int m_p1 = sc->GetConstrainedVertexIndex2();
-    s_triplets.emplace_back(SparseMatrixTriplet(0, m_p0 * 3 + 0, 1));
-    s_triplets.emplace_back(SparseMatrixTriplet(1, m_p0 * 3 + 1, 1));
-    s_triplets.emplace_back(SparseMatrixTriplet(2, m_p0 * 3 + 2, 1));
-  }
-
-  s.setFromTriplets(s_triplets.begin(), s_triplets.end());
-
-  return s;
-}
-
-void Simulation::CreateLHSMatrix() {
-  SparseMatrix M; 
-  M = m_mesh->m_mass_matrix / (m_h * m_h); // mesh->mass_matrix;
-  for (std::vector<Constraint*>::iterator c = m_constraints.begin(); c != m_constraints.end(); ++c) {
-    // Could this be moved above the for-loop. QUESTION FOR LATER.
-    SparseMatrix S_i;
-    SparseMatrix A_i;
-    double w_i;
-
-    AttachmentConstraint* ac;
-    if (ac = dynamic_cast<AttachmentConstraint*>(*c)) {
-      w_i = ac->Stiffness();
-      A_i = m_A_attachment;
-    }
-
-    SpringConstraint* sc;
-    if (sc = dynamic_cast<SpringConstraint*>(*c)) {
-      w_i = sc->Stiffness();
-      A_i = m_A_spring;
-    }
-
-    S_i = CreateSMatrix(*c);
-    SparseMatrix S_i_transpose = S_i.transpose();
-    SparseMatrix A_i_transpose = A_i;
-    
-    S_i_transpose.applyThisOnTheLeft(A_i_transpose);
-    A_i_transpose.applyThisOnTheLeft(A_i);
-
-    M += (w_i * S_i);
-  }
-  m_llt.compute(M);
-}
-
-void Simulation::CreateRHSMatrix() {
-  for (std::vector<Constraint*>::iterator c = m_constraints.begin(); c != m_constraints.end(); ++c) {
-    SparseMatrix A_i;
-    SparseMatrix B_i;
-
-    AttachmentConstraint* ac;
-    if (ac = dynamic_cast<AttachmentConstraint*>(*c)) {
-      A_i = m_A_attachment;
-      B_i = m_B_attachment;
-    }
-
-    SpringConstraint* sc;
-    if (sc = dynamic_cast<SpringConstraint*>(*c)) {
-      A_i = m_A_spring;
-      B_i = m_B_spring;
-    }
-
-    double w_i = (*c)->Stiffness();
-    SparseMatrix S_i = CreateSMatrix((*c));
-    SparseMatrix S_i_transpose = S_i.transpose();
-    S_i_transpose.applyThisOnTheLeft(A_i);
-    A_i.applyThisOnTheLeft(B_i);
-    (*c)->m_RHS = w_i * B_i;
-  }
-}
-
-void Simulation::Update() {
-  calculateInertiaY();
-  calculateExternalForce();
-
-  AttachmentConstraint* ac;
-  SpringConstraint* sc;
-
-  VectorX* p_j;
-  Constraint* c_j;
-
-  unsigned int tn;
-
-  VectorX q_n = m_mesh->m_current_positions;
-  VectorX s_n = m_inertia_y + (m_h * m_h) * (m_mesh->inv_mass_matrix_) * m_external_force;
-  VectorX q_n1 = s_n;
-
-  SparseMatrix coeff = m_mesh->m_mass_matrix / (m_h * m_h);
-  coeff.applyThisOnTheLeft(s_n);
-  //Before simulation we'll need to get Spring and Attachment constraint values into an array.
-
-  //After completion convert back to their original Eigenvalue
-  // LOCAL SOLVE STEP
-  for (int i = 0; i < 1; i++)
-  {
-
-    VectorX b = s_n;
-
-    int rows = 0;
-
-    EigenVector3 current_vector;
-    ScalarType current_stretch;
-    ConstraintType constraintType;
-
-    int num_parallel_loops = ceil(m_constraints.size() / (float)omp_get_max_threads());
-    for (int j = 0; j < num_parallel_loops; j++)
-    {
-      #pragma omp parallel default(shared) private(c_j, p_j, tn, sc, ac, tc, current_strecth, current_vector) 
-      {
-        tn = omp_get_thread_num() + j * omp_get_max_threads();
-        if (tn < m_constraints.size())
-        {
-          c_j = m_constraints[tn];
-          constraintType = c_j->GetConstraintType();
-
-          #pragma omp critical 
-          {
-            if (constraintType == SpriConstraint) // is spring constraint
-            {
-              sc = (SpringConstraint*)c_j;
-              current_vector = q_n1.block_vector(sc->GetConstrainedVertexIndex1()) - q_n1.block_vector(sc->GetConstrainedVertexIndex2());
-              current_stretch = current_vector.norm() - sc->GetRestLength();
-              current_vector = (current_stretch / 2.0) * current_vector.normalized();
-
-              p_j = &p_spring; //Assign all the vectors from p_spring
-              p_j->resize(6); //Resizes
-              rows = 6;
-              p_j->block_vector(0) = q_n1.block_vector(sc->GetConstrainedVertexIndex1()) - current_vector;
-              p_j->block_vector(1) = q_n1.block_vector(sc->GetConstrainedVertexIndex2()) + current_vector;
-            }
-
-            else if (constraintType == AttConstraint) // is attachment constraint
-            {
-              ac = (AttachmentConstraint*)c_j;
-              p_j = &p_attach;
-              p_j->resize(3);
-
-              p_j->block_vector(0) = ac->GetFixedPoint();
-              rows = 3;
-            }
-
-            c_j->m_RHS.applyThisOnTheLeft(*p_j); //To enable working solution uncomment 
-            b += *p_j;
-          }
-        }
-      }
-    }
-    // GLOBAL SOLVE STEP
-    q_n1 = m_llt.solve(b);
-  }
-  VectorX v_n1 = (q_n1 - q_n) / m_h;
-  m_mesh->m_current_positions = q_n1;
-  m_mesh->m_current_velocities = v_n1;
-
-  // Add collision detection here using pos_next;
-  //VectorX penetration = collisionDetection(m_mesh->m_current_positions);
-  //m_mesh->m_current_positions -= penetration;
-
-  // update velocity and damp
-  dampVelocity();
-
-}
-
-void Simulation::calculateExternalForce() {
-  m_external_force.resize(m_mesh->m_system_dimension);
-  m_external_force.setZero();
-
-  // gravity
-  for (unsigned int i = 0; i < m_mesh->vertices_.size(); ++i)
-  {
-    m_external_force[3 * i + 1] += -m_gravity_constant;
-  }
-
-  m_external_force = m_mesh->m_mass_matrix * m_external_force;
-}
-
-void Simulation::calculateInertiaY() {
-  m_inertia_y = m_mesh->m_current_positions + m_mesh->m_current_velocities * m_h;
-}
-
-void Simulation::dampVelocity() {
-  m_mesh->m_current_velocities *= (1.0 - m_damping_coefficient);
-}
-
-void Simulation::setupConstraints() {
-  clearConstraints();
-  
-  EigenVector3 pR1, pR2;
-  for (std::vector<Edge>::iterator e = m_mesh->m_edge_list.begin(); e != m_mesh->m_edge_list.end(); ++e)
-  {
-    pR1 = m_mesh->m_current_positions.block_vector(e->m_v1);
-    pR2 = m_mesh->m_current_positions.block_vector(e->m_v2);
-    SpringConstraint* c = new SpringConstraint(&m_stiffness_stretch, e->m_v1, e->m_v2, (pR1 - pR2).norm());
-    m_constraints.push_back(c);
-  }
-
-  // Setting up the bending constraints
-  for (std::vector<Edge>::iterator e = m_mesh->m_edge_list.begin(); e != m_mesh->m_edge_list.end(); ++e)
-  {
-    pR1 = m_mesh->m_current_positions.block_vector(e->m_v1);
-    pR2 = m_mesh->m_current_positions.block_vector(e->m_v2);
-    SpringConstraint* c = new SpringConstraint(&m_stiffness_bending, e->m_v1, e->m_v2, (pR1 - pR2).norm());
-    m_constraints.push_back(c);
-
-  }
-
-  AddAttachmentConstraint(0);
-}
+Simulation::~Simulation() { clearConstraints(); }
 
 void Simulation::clearConstraints() {
-  for (unsigned int i = 0; i < m_constraints.size(); ++i)
-  {
-    delete m_constraints[i];
-  }
+  for (Constraint* c : m_constraints) delete c;
   m_constraints.clear();
 }
 
-Simulation::~Simulation() {
+void Simulation::InitHairStrands(const std::vector<EigenVector3>& roots,
+                                 const EigenVector3& direction,
+                                 unsigned int segments,
+                                 ScalarType segment_length) {
   clearConstraints();
+  m_segment_indices.clear();
+
+  const unsigned int per_strand = segments + 1;
+  const unsigned int n = static_cast<unsigned int>(roots.size()) * per_strand;
+  const EigenVector3 dir = direction.normalized();
+
+  m_positions.resize(n, 3);
+  m_velocities.setZero(n, 3);
+
+  for (unsigned int s = 0; s < roots.size(); ++s) {
+    const unsigned int base = s * per_strand;
+    for (unsigned int k = 0; k < per_strand; ++k) {
+      m_positions.row(base + k) = (roots[s] + dir * (segment_length * k)).transpose();
+    }
+
+    m_constraints.push_back(new AttachmentConstraint(&m_stiffness_attachment, base, roots[s]));
+
+    for (unsigned int k = 0; k + 1 < per_strand; ++k) {
+      m_constraints.push_back(new SpringConstraint(&m_stiffness_stretch, base + k, base + k + 1,
+                                                   segment_length));
+      m_segment_indices.push_back(base + k);
+      m_segment_indices.push_back(base + k + 1);
+    }
+    for (unsigned int k = 0; k + 2 < per_strand; ++k) {
+      m_constraints.push_back(new SpringConstraint(&m_stiffness_bending, base + k, base + k + 2,
+                                                   2.0 * segment_length));
+    }
+  }
+
+  m_initial_positions = m_positions;
+  m_time_accumulator = 0.0;
+  RebuildSystemMatrix();
+}
+
+void Simulation::RebuildSystemMatrix() {
+  const unsigned int n = NumParticles();
+  std::vector<SparseMatrixTriplet> triplets;
+  triplets.reserve(n + m_constraints.size() * 4);
+
+  // M / h^2 (lumped, uniform mass).
+  const ScalarType inertia = m_particle_mass / (m_h * m_h);
+  for (unsigned int i = 0; i < n; ++i) triplets.emplace_back(i, i, inertia);
+
+  // + sum_i w_i G_i^T G_i
+  for (const Constraint* c : m_constraints) c->AddToLHS(&triplets);
+
+  SparseMatrix lhs(n, n);
+  lhs.setFromTriplets(triplets.begin(), triplets.end());  // Duplicates are summed.
+
+  m_llt.compute(lhs);
+  m_system_ready = (m_llt.info() == Eigen::Success);
+  if (!m_system_ready) std::cerr << "Simulation: system matrix factorization failed" << std::endl;
+}
+
+void Simulation::Reset() {
+  m_positions = m_initial_positions;
+  m_velocities.setZero(m_positions.rows(), 3);
+  m_time_accumulator = 0.0;
+}
+
+void Simulation::Update(float dt) {
+  if (!m_system_ready) return;
+  // Clamp very long frames (e.g. window drag) so we don't spiral.
+  m_time_accumulator += std::min(static_cast<double>(dt), m_h * m_max_substeps_per_frame);
+  while (m_time_accumulator >= m_h) {
+    Step();
+    m_time_accumulator -= m_h;
+  }
+}
+
+void Simulation::Step() {
+  if (!m_system_ready) return;
+  const unsigned int n = NumParticles();
+  const ScalarType inertia = m_particle_mass / (m_h * m_h);
+
+  // Inertial prediction and the constant part of the RHS: M/h^2 y + f_ext.
+  const EigenMatrix3x y = m_positions + m_h * m_velocities;
+  EigenMatrix3x b0 = inertia * y;
+  b0.col(1).array() -= m_particle_mass * m_gravity_constant;
+
+  EigenMatrix3x x = y;
+  EigenMatrix3x b(n, 3);
+  for (int it = 0; it < m_iterations_per_step; ++it) {
+    // Local step: each constraint projects independently (serial for now; this
+    // loop is what would move to a GPU kernel).
+    b = b0;
+    for (const Constraint* c : m_constraints) c->AddToRHS(x, &b);
+    // Global step: same prefactored matrix for x, y and z.
+    x = m_llt.solve(b);
+  }
+
+  m_velocities = (x - m_positions) / m_h;
+  m_velocities *= (1.0 - m_damping_coefficient);
+  m_positions = x;
 }

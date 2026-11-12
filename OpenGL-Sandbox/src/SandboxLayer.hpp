@@ -6,6 +6,7 @@
 #include "ModelLoader.hpp"
 #include "LineTools.h"
 #include "Simulation.h"
+#include "StrandRenderer.h"
 
 
 class SandboxLayer : public GLCore::Layer
@@ -26,6 +27,8 @@ private:
   std::unique_ptr<LineTools> line_;
 
   std::unique_ptr<Simulation> m_sim;
+  std::unique_ptr<StrandRenderer> m_strand_renderer;
+  bool m_run_sim = true;
 
   const aiScene* kScene; // Current Scene.
   
