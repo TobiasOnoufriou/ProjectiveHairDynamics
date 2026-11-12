@@ -4,10 +4,11 @@
 #include "Scene.h"
 #include "TetMesh.h"
 
-// A kinematic bone: a rigid set of solver vertices (its render box plus the
-// tendon vertices attached to it), all fixed (Dirichlet). Posing the bone only
-// moves their targets through PDSolver::SetFixedTarget, so animating bones
-// changes the right-hand side and never the system matrix.
+// A kinematic bone: the rigid set of tendon vertices attached to it, all fixed
+// (Dirichlet), plus a capsule collider owned by the solver. Posing the bone
+// only moves their targets through PDSolver::SetFixedTarget (and the collider's
+// pose), so animating bones changes the right-hand side and never the system
+// matrix.
 struct KinematicBone {
   EigenVector3 pivot = EigenVector3::Zero();  // Joint centre; the bone rotates about +z through it.
   std::vector<unsigned int> vertices;         // Solver vertices that move with the bone.
@@ -33,6 +34,12 @@ struct KinematicBone {
 //   - tendon tets (both ends): a much stiffer strain constraint and no fibres,
 //   - belly tets: an active fibre constraint along a fibre field that follows
 //     the spindle shape, with target stretch 1 - activation * max contraction.
+// Contact (Phase 6): both bones are capsule colliders (drawn by the app), so
+// the belly rests on the upper arm instead of sinking into it and the flexing
+// forearm pushes the muscle instead of passing through it. The forearm
+// collider is posed with the bone and carries its angular velocity for
+// friction. The passive belly is soft, so under gravity it slumps onto the
+// upper arm and drapes around it.
 // Activation and the elbow angle only move projection targets (RHS). With
 // m_animate the elbow flexes and extends periodically and the activation
 // follows the flexion, so the belly shortens and bulges.
@@ -65,17 +72,20 @@ class MuscleScene : public Scene {
   ScalarType m_cycle_seconds;     // Period of the flex/extend animation.
   ScalarType m_density;           // kg / m^3.
   ScalarType m_resolution;        // Cells along the muscle.
+  ScalarType m_friction;          // Coulomb coefficient muscle-bone (RHS only).
+  ScalarType m_stiffness_contact; // Contact slot weight.
   bool m_animate;
+  bool m_bone_contact;            // Enables the bone colliders (RHS only).
+  bool m_interior_contact;        // Contact slots on every free vertex, not only the boundary (rebuild).
   bool m_show_wireframe;
 
   static constexpr ScalarType kMaxAnimatedAngleDeg = 120.0;
 
  private:
   void MakeMuscle();
-  // Appends an axis-aligned box (4 vertices per face, for flat shading) to
-  // *positions and its triangles to m_surface_indices; returns its vertex ids.
-  std::vector<unsigned int> AddBox(const EigenVector3& lo, const EigenVector3& hi,
-                                   std::vector<EigenVector3>* positions);
+  // Poses the forearm bone and its collider at the current elbow angle; dt > 0
+  // sets the collider's angular velocity from the change since the last pose.
+  void PoseForearm(PDSolver* solver, double dt);
 
   TetMesh m_mesh;
   std::vector<char> m_is_tendon;  // Per tet.
@@ -83,6 +93,10 @@ class MuscleScene : public Scene {
   std::vector<unsigned int> m_insertion_vertices;  // Muscle vertices on the forearm.
   KinematicBone m_upper_arm;
   KinematicBone m_forearm;
+  int m_upper_arm_collider = -1;  // Solver collider indices.
+  int m_forearm_collider = -1;
+  EigenVector3 m_forearm_rest_centre = EigenVector3::Zero();
+  ScalarType m_posed_angle = 0.0;  // Elbow angle (rad) the forearm collider was last posed at.
   double m_phase;  // Animation phase in [0, 1).
   std::vector<unsigned int> m_edge_indices;
   std::vector<unsigned int> m_surface_indices;

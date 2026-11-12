@@ -12,6 +12,11 @@
 // [m_min_stretch, m_max_stretch]) plus one volume constraint per tet (det F
 // towards 1). Both are weighted by rest volume, so the stiffness is a material
 // property independent of the mesh resolution.
+//
+// The procedural beam also has contact (Phase 6): a sphere under its free half
+// and a ground plane below, both touching only the boundary vertices. The
+// default beam is stiff enough to clear them; lower the strain stiffness to
+// drape it over the sphere onto the ground.
 class TetScene : public Scene {
  public:
   // Default: procedural 1 x 0.2 x 0.2 m beam, m_resolution cells along its length.
@@ -25,6 +30,8 @@ class TetScene : public Scene {
   const std::vector<unsigned int>& LineIndices() const override;
   const std::vector<unsigned int>& SurfaceIndices() const override { return m_surface_indices; }
   std::vector<SceneParam> Params() override;
+  // Moves the ground to m_ground_height and applies m_friction (RHS only).
+  void Update(PDSolver* solver, double dt) override;
 
   const TetMesh& Mesh() const { return m_mesh; }
 
@@ -36,6 +43,9 @@ class TetScene : public Scene {
   ScalarType m_max_volume;
   ScalarType m_density;     // kg / m^3.
   ScalarType m_resolution;  // Cells along the beam (procedural beam only).
+  ScalarType m_ground_height;  // y of the ground plane (procedural beam only).
+  ScalarType m_friction;       // Coulomb coefficient of every collider.
+  ScalarType m_stiffness_contact;  // Contact slot weight.
   bool m_show_wireframe;
 
  private:
@@ -45,4 +55,5 @@ class TetScene : public Scene {
   TetMesh m_mesh;
   std::vector<unsigned int> m_edge_indices;
   std::vector<unsigned int> m_surface_indices;
+  int m_ground = -1;  // Solver collider index of the ground plane.
 };

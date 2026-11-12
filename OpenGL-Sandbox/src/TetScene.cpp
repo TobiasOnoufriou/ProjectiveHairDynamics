@@ -17,6 +17,9 @@ TetScene::TetScene()
       m_max_volume(1.0),
       m_density(1000.0),
       m_resolution(10.0),
+      m_ground_height(0.45),
+      m_friction(0.5),
+      m_stiffness_contact(1e5),
       m_show_wireframe(false),
       m_procedural(true) {
   MakeBeam();
@@ -31,6 +34,9 @@ TetScene::TetScene(TetMesh mesh)
       m_max_volume(1.0),
       m_density(1000.0),
       m_resolution(0.0),
+      m_ground_height(0.45),
+      m_friction(0.5),
+      m_stiffness_contact(1e5),
       m_show_wireframe(false),
       m_procedural(false),
       m_mesh(std::move(mesh)) {}
@@ -72,7 +78,27 @@ void TetScene::Build(PDSolver* solver) {
   for (const TetMesh::Triangle& tri : m_mesh.BoundaryTriangles()) {
     m_surface_indices.insert(m_surface_indices.end(), tri.begin(), tri.end());
   }
+
+  m_ground = -1;
+  if (m_procedural) {
+    // The beam spans x in [-0.5, 0.5] at y in [0.8, 1.0]: the sphere's top is
+    // 6 cm below its free half.
+    m_ground = solver->AddCollider(Collider::Plane(EigenVector3(0.0, m_ground_height, 0.0), EigenVector3::UnitY()));
+    solver->AddCollider(Collider::Sphere(EigenVector3(0.2, 0.62, 0.0), 0.12));
+    // Interior vertices cannot reach a collider before the surface does.
+    solver->SetContactVertices(m_surface_indices);
+    solver->SetContactStiffness(&m_stiffness_contact);
+    Update(solver, 0.0);
+  }
   solver->Finalize();
+}
+
+void TetScene::Update(PDSolver* solver, double /*dt*/) {
+  if (m_ground < 0) return;
+  solver->GetCollider(m_ground).translation.y() = m_ground_height;
+  for (int k = 0; k < static_cast<int>(solver->GetColliders().size()); ++k) {
+    solver->GetCollider(k).friction = m_friction;
+  }
 }
 
 const std::vector<unsigned int>& TetScene::LineIndices() const {
@@ -88,6 +114,11 @@ std::vector<SceneParam> TetScene::Params() {
       {"Max stretch", &m_max_stretch, 1.0f, 3.0f, false, SceneParam::kNone},
       {"Density (kg/m^3)", &m_density, 10.0f, 1e4f, true, SceneParam::kRebuildScene},
   };
-  if (m_procedural) params.push_back({"Cells along beam", &m_resolution, 1.0f, 40.0f, false, SceneParam::kRebuildScene});
+  if (m_procedural) {
+    params.push_back({"Cells along beam", &m_resolution, 1.0f, 40.0f, false, SceneParam::kRebuildScene});
+    params.push_back({"Ground height", &m_ground_height, -0.5f, 0.75f, false, SceneParam::kNone});
+    params.push_back({"Friction", &m_friction, 0.0f, 2.0f, false, SceneParam::kNone});
+    params.push_back({"Contact stiffness", &m_stiffness_contact, 1e3f, 1e7f, true, SceneParam::kSystemMatrix});
+  }
   return params;
 }

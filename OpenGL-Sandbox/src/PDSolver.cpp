@@ -31,6 +31,7 @@ PDSolver::PDSolver()
     : m_h(1.0 / 60.0),
       m_gravity_constant(9.81),
       m_stiffness_drag(5e4),
+      m_stiffness_contact(1e5),
       m_damping_coefficient(0.02),
       m_iterations_per_step(10),
       m_max_substeps_per_frame(4),
@@ -51,6 +52,10 @@ PDSolver::~PDSolver() = default;
 void PDSolver::Clear() {
   m_constraints.clear();
   m_drag_constraint.reset();
+  m_colliders.clear();
+  m_contact_vertices.clear();
+  m_contact_slots.clear();
+  m_contact_stiffness = nullptr;
   m_positions.resize(0, 3);
   m_velocities.resize(0, 3);
   m_initial_positions.resize(0, 3);
@@ -94,6 +99,17 @@ void PDSolver::Finalize() {
 void PDSolver::SetFixedTarget(unsigned int vertex, const EigenVector3& target) {
   if (vertex >= NumVertices() || !IsFixed(vertex)) return;
   m_positions.row(vertex) = target.transpose();
+}
+
+int PDSolver::AddCollider(const Collider& collider) {
+  m_colliders.push_back(collider);
+  m_system_ready = false;  // The first collider adds the contact slots.
+  return static_cast<int>(m_colliders.size()) - 1;
+}
+
+void PDSolver::SetContactVertices(const std::vector<unsigned int>& vertices) {
+  m_contact_vertices = vertices;
+  m_system_ready = false;
 }
 
 void PDSolver::RebuildSystemMatrix() {
@@ -229,6 +245,31 @@ void PDSolver::RebuildSystemMatrix() {
       b.param1.push_back(t->MaxContraction());
       b.fibre.push_back(t->Fibre());
       add_rows(c);
+    }
+  }
+  // Contact slots: one row G = e_i per free contact vertex, whenever colliders exist.
+  m_contact_slots.clear();
+  if (!m_colliders.empty()) {
+    if (m_contact_vertices.empty()) {
+      m_contact_slots = m_free_vertices;
+    } else {
+      for (unsigned int i : m_contact_vertices) {
+        if (i < n && m_free_index[i] >= 0) m_contact_slots.push_back(i);
+      }
+      std::sort(m_contact_slots.begin(), m_contact_slots.end());
+      m_contact_slots.erase(std::unique(m_contact_slots.begin(), m_contact_slots.end()), m_contact_slots.end());
+    }
+  }
+  if (!m_contact_slots.empty()) {
+    ConstraintBatch& b = new_batch(BatchKind::kContact, 1);
+    b.colliders = &m_colliders;
+    m_contact_weight = ContactStiffness();
+    const ScalarType w_contact = m_contact_weight;
+    for (unsigned int i : m_contact_slots) {
+      b.weight.push_back(w_contact);
+      j_triplets.emplace_back(row, static_cast<int>(i), 1.0);
+      w_rows.push_back(w_contact);
+      ++row;
     }
   }
   if (!generics.empty()) {
@@ -444,6 +485,18 @@ ScalarType PDSolver::projectBatch(const ConstraintBatch& b, const RowMatrix3x& g
         energy += 0.5 * b.weight[e] * (fa - out).squaredNorm();
       }
       break;
+    case BatchKind::kContact:
+      // Closest point outside every collider (the vertex itself if outside).
+#pragma omp for schedule(static) nowait
+      for (int e = 0; e < n; ++e) {
+        const Eigen::Map<const EigenVector3> x(g + 3 * e);
+        Eigen::Map<EigenVector3> out(q + 3 * e);
+        EigenVector3 projected = x;
+        ProjectOutOfColliders(*b.colliders, &projected);
+        out = projected;
+        energy += 0.5 * b.weight[e] * (x - out).squaredNorm();
+      }
+      break;
     case BatchKind::kGeneric:
 #pragma omp for schedule(static) nowait
       for (int e = 0; e < n; ++e) {
@@ -489,6 +542,8 @@ void PDSolver::metricsBatch(const ConstraintBatch& b, const RowMatrix3x& gx, Sca
         s = std::max(s, TetFibreConstraint::FibreStrain(Eigen::Map<const EigenVector3>(g + 3 * e), target));
       }
       break;
+    case BatchKind::kContact:
+      break;  // Penetration is reported by contactVelocityPass().
     case BatchKind::kGeneric:
 #pragma omp for schedule(static) nowait
       for (int e = 0; e < n; ++e) {
@@ -621,6 +676,36 @@ void PDSolver::andersonUpdate(const EigenMatrix3x& g, const EigenMatrix3x& f, Ei
   for (int i = 0; i < cols; ++i) *u_next -= theta(i) * m_aa_dg[i];
 }
 
+void PDSolver::contactVelocityPass() {
+  m_stats.num_contacts = 0;
+  m_stats.max_penetration = 0.0;
+  const ScalarType w_contact = m_contact_weight;  // As factored.
+  for (unsigned int i : m_contact_slots) {
+    const EigenVector3 x = m_positions.row(i).transpose();
+    ScalarType depth = 0.0;
+    EigenVector3 n;
+    const int k = DeepestPenetration(m_colliders, x, &depth, &n);
+    if (k < 0) continue;
+    ++m_stats.num_contacts;
+    m_stats.max_penetration = std::max(m_stats.max_penetration, depth);
+
+    // Velocity relative to the collider's surface, split into normal and
+    // tangential parts. Approaching (vn < 0) is removed: inelastic contact.
+    const Collider& c = m_colliders[k];
+    const EigenVector3 vc = c.PointVelocity(x);
+    const EigenVector3 rel = m_velocities.row(i).transpose() - vc;
+    const ScalarType vn = std::max(rel.dot(n), 0.0);
+    EigenVector3 vt = rel - rel.dot(n) * n;
+    // Coulomb: the slot pushes with normal force f_n = w * depth over the
+    // step, which can remove at most mu f_n h / m of tangential velocity
+    // (static friction if that covers all of it).
+    const ScalarType vt_norm = vt.norm();
+    const ScalarType budget = c.friction * w_contact * depth * m_h / m_masses[i];
+    vt *= vt_norm > budget ? 1.0 - budget / vt_norm : 0.0;
+    m_velocities.row(i) = (vc + vn * n + vt).transpose();
+  }
+}
+
 void PDSolver::Step() {
   if (!m_system_ready) return;
   const auto start = std::chrono::steady_clock::now();
@@ -713,8 +798,9 @@ void PDSolver::Step() {
   if (m_track_energy) m_stats.energy.push_back(inertiaEnergy(m_x, m_y) + localStep(m_x, &m_gx, &m_projections));
 
   m_velocities = (m_x - m_positions) / m_h;
-  m_velocities *= (1.0 - m_damping_coefficient);
   m_positions = m_x;
+  contactVelocityPass();
+  m_velocities *= (1.0 - m_damping_coefficient);
 
   m_stats.step_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
   m_stats.local_ms = std::chrono::duration<double, std::milli>(local_time).count();

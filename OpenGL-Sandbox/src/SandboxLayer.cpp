@@ -74,6 +74,8 @@ void SandboxLayer::OnAttach()
   m_sim->m_acceleration = PDAcceleration::kAnderson;
   m_strand_renderer = std::make_unique<StrandRenderer>();
   m_surface_renderer = std::make_unique<SurfaceRenderer>();
+  m_collider_renderer = std::make_unique<SurfaceRenderer>();
+  m_collider_renderer->SetColor(glm::vec3(0.45f, 0.50f, 0.58f));
   LoadScene(0);
 
   this->kScene = model_loader_->getScene();
@@ -96,6 +98,21 @@ void SandboxLayer::UploadStrands()
 {
   m_strand_renderer->Upload(m_sim->GetPositions(), m_scene->LineIndices());
   m_surface_renderer->Upload(m_sim->GetPositions(), m_scene->SurfaceIndices());
+  UploadColliders();
+}
+
+void SandboxLayer::UploadColliders()
+{
+  std::vector<EigenVector3> points;
+  std::vector<unsigned int> indices;
+  if (m_show_colliders) {
+    for (const Collider& c : m_sim->GetColliders()) {
+      if (c.visible) TriangulateCollider(c, 4.0, &points, &indices);
+    }
+  }
+  EigenMatrix3x positions(points.size(), 3);
+  for (size_t k = 0; k < points.size(); ++k) positions.row(k) = points[k].transpose();
+  m_collider_renderer->Upload(positions, indices);
 }
 
 void SandboxLayer::OnDetach()
@@ -205,6 +222,7 @@ void SandboxLayer::OnUpdate(Timestep ts)
   // Exponential moving average so the ms/step readout is legible.
   m_avg_step_ms += 0.05 * (m_sim->GetStats().step_ms - m_avg_step_ms);
   m_surface_renderer->Draw(camera_controller_);
+  m_collider_renderer->Draw(camera_controller_);
   m_strand_renderer->Draw(camera_controller_);
 }
 
@@ -268,6 +286,8 @@ void SandboxLayer::DrawSimulationTab() {
     m_sim->Reset();
     UploadStrands();
   }
+  ImGui::SameLine();
+  if (ImGui::Checkbox("Show colliders", &m_show_colliders)) UploadColliders();
 
   ImGui::SliderInt("Iterations", &m_sim->m_iterations_per_step, 1, 50);
   // Iterate extrapolation (RHS-side only, the system matrix is unchanged).
@@ -316,8 +336,12 @@ void SandboxLayer::DrawSimulationTab() {
   }
   if (auto* muscle = dynamic_cast<MuscleScene*>(m_scene.get())) {
     ImGui::Checkbox("Animate elbow + activation", &muscle->m_animate);
+    ImGui::Checkbox("Muscle-bone contact", &muscle->m_bone_contact);
+    ImGui::SameLine();
+    // Which vertices have contact slots is part of the system: rebuild.
+    if (ImGui::Checkbox("Interior vertices too", &muscle->m_interior_contact)) rebuild_scene = true;
     if (ImGui::Checkbox("Show tet edges", &muscle->m_show_wireframe)) UploadStrands();
-    // Current muscle volume over rest volume (the bones are not part of the mesh).
+    // Current muscle volume over rest volume.
     const TetMesh& mesh = muscle->Mesh();
     ScalarType volume = 0.0;
     for (size_t t = 0; t < mesh.NumTets(); ++t) volume += mesh.SignedVolume(t, m_sim->GetPositions());
@@ -342,6 +366,10 @@ void SandboxLayer::DrawMetricsTab() {
   ImGui::Text("Max strain: %.3e   Max volume error: %.3e", stats.max_strain, stats.max_volume_error);
   if (m_sim->m_acceleration != PDAcceleration::kNone) {
     ImGui::Text("Rejected accelerated iterates: %d", stats.rejected_iterations);
+  }
+  if (!m_sim->GetColliders().empty()) {
+    ImGui::Text("Contacts: %d of %zu slots, max penetration %.2f mm", stats.num_contacts, m_sim->NumContactSlots(),
+                1e3 * stats.max_penetration);
   }
 
   // Race-free local step: every constraint projects into its own slot, so the

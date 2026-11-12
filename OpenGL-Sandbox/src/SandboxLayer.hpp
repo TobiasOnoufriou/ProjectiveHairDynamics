@@ -35,6 +35,8 @@ private:
   // Instantiates scene `index` from the scene list and builds it into m_sim.
   void LoadScene(int index);
   void UploadStrands();
+  // Triangulates the solver's visible colliders into m_collider_renderer.
+  void UploadColliders();
 
   static constexpr float kPickRadiusPx = 15.0f;
   float m_drag_ndc_depth = 0.0f;  // Keeps the dragged particle at a constant depth from the camera.
@@ -52,6 +54,8 @@ private:
   std::vector<float> m_energy_plot;
   std::unique_ptr<StrandRenderer> m_strand_renderer;
   std::unique_ptr<SurfaceRenderer> m_surface_renderer;
+  std::unique_ptr<SurfaceRenderer> m_collider_renderer;
+  bool m_show_colliders = true;
   bool m_run_sim = true;
 
   const aiScene* kScene; // Current Scene.

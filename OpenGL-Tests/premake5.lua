@@ -27,6 +27,8 @@ project "OpenGL-Tests"
     "../OpenGL-Sandbox/src/TetScene.cpp",
     "../OpenGL-Sandbox/src/MuscleScene.h",
     "../OpenGL-Sandbox/src/MuscleScene.cpp",
+    "../OpenGL-Sandbox/src/Collider.h",
+    "../OpenGL-Sandbox/src/Collider.cpp",
     "../OpenGL-Sandbox/src/Constraint.h",
     "../OpenGL-Sandbox/src/TetConstraints.h",
     "../OpenGL-Sandbox/src/TetConstraints.cpp",

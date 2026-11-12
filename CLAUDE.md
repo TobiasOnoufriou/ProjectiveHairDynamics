@@ -24,6 +24,10 @@ The hair solver must keep working as a regression scene while the muscle work la
     arrays with inlined kernels; strain + volume constraints on the same tet are paired and share one SVD; other
     constraints (drag, user types) go through the virtual `Project`. Optional safeguarded Chebyshev / Anderson
     acceleration (`m_acceleration`). `Step()` makes no heap allocations once the buffers are sized.
+    Contact: kinematic `Collider`s (`AddCollider`, posed via `GetCollider`, RHS only) and fixed-weight contact slots
+    (`SetContactVertices`, `SetContactStiffness`), plus a post-step Coulomb friction / inelastic normal velocity pass.
+  - `Collider.*` - plane / sphere / capsule / box colliders: signed distance, closest-point projection out of a set of
+    colliders, triangulation for drawing. No GL, tested headless.
   - `Constraint.h` - PD constraint interface plus `AttachmentConstraint` (soft drag) and `SpringConstraint`. A constraint
     declares `NumRows()`, its `G` entries (`AddG`), a `Weight()`, and `Project(Gx) -> p`, which may only write its
     own slice. The solver computes energies `w/2 ||Gx - p||^2` and assembles LHS/RHS.
@@ -32,12 +36,14 @@ The hair solver must keep working as a regression scene while the muscle work la
     constraint: one row `G = a^T Dm^-T E` (so `Gx = (F a)^T`), projected to stretch `1 - activation * max_contraction`.
   - `TetMesh.*` - tet mesh data (positive-orientation convention), optional per-tet fibre directions, procedural Kuhn-subdivided beam, TetGen
     `.node/.ele` load/save, boundary triangles, edges, lumped masses, vertex normals. No GL, tested headless.
-  - `TetScene.*` - clamped cantilever tet beam with a strain + volume constraint per tet.
+  - `TetScene.*` - clamped cantilever tet beam with a strain + volume constraint per tet, a sphere and a ground plane.
   - `MuscleScene.*` - biceps-style fusiform muscle between a static upper-arm bone and a hinged forearm.
-    `KinematicBone` = rigid set of fixed vertices (render box + attached tendon vertices) posed via
-    `SetFixedTarget` only. Tendon tets are stiff, belly tets get a `TetFibreConstraint`. `Scene::Update` drives
-    the elbow/activation animation each frame before `PDSolver::Update`.
-  - `SurfaceRenderer.*` - lit triangle surface (`Scene::SurfaceIndices`), normals recomputed per upload.
+    `KinematicBone` = rigid set of fixed tendon vertices posed via `SetFixedTarget` only; the bones themselves are
+    capsule colliders (drawn by the app). Tendon tets are stiff, belly tets get a `TetFibreConstraint`.
+    `Scene::Update` drives the elbow/activation animation and the forearm collider each frame before
+    `PDSolver::Update`.
+  - `SurfaceRenderer.*` - lit triangle surface (`Scene::SurfaceIndices`, and the visible colliders), normals
+    recomputed per upload.
   - `Scene.h`, `HairScene.*` - scene builders that fill a `PDSolver` and expose tunable `SceneParam`s (no ImGui, so
     they are testable headless). New scenes are registered in `kScenes` in `SandboxLayer.cpp`.
   - `SandboxLayer.*` - scene selection, mouse picking/dragging, ImGui panels (Simulation, Metrics, Camera).
@@ -157,9 +163,25 @@ Work through phases in order. Each phase should leave the app building, running 
     stays plain. Chebyshev with rho = 0.9 never triggers the safeguard and gives 2-3x lower error; larger rho
     overshoots and gets rejected.
 
-### Phase 6: Contact
-- [ ] Ground plane and bone collisions as fixed-weight slots or post-projection (no refactor).
+### Phase 6: Contact (ground and bones done; self contact open)
+- [x] Ground plane and bone collisions as fixed-weight slots (no refactor). Once a collider exists, every contact
+      vertex owns one row `G = e_i` with a constant weight; its projection is the closest point outside all colliders
+      (itself when outside), so posing colliders is RHS only and the energy stays monotone. After the step, contact
+      vertices inside a collider lose their approaching normal velocity and get Coulomb friction with normal force
+      `w * depth`, relative to the collider's rigid velocity. Demos: hair over a sphere onto the ground, a soft beam
+      draped over a sphere (lower its strain stiffness), the biceps on capsule bones. Tests: `contact_test.cpp`.
 - [ ] Muscle-muscle / self contact (later; see Ly et al. 2020 for contact and friction in PD).
+- Notes:
+  - Slots are vertex-only: edges and faces can still cut through a collider between vertices (thin colliders,
+    coarse meshes). Overlapping colliders (e.g. the elbow capsules beyond 120 deg) are resolved approximately.
+  - A slot whose vertex is outside still adds `w ||x - x_k||^2` to every global step, a proximal term that slows
+    convergence of the slotted vertices. The weight is per scene (`Contact stiffness`, default 1e5): stiffer gives
+    less penetration but slower plain PD. Anderson absorbs most of the lag.
+  - Muscle: the passive belly is soft, so under gravity it slumps onto the upper arm and drapes around it; with
+    slots on interior vertices too (default) and Anderson, volume stays within ~2% and boundary penetration ~6 mm at
+    full activation and 120 deg (without contact the belly sinks ~4 cm into the bone). Plain PD at 10 iterations
+    with contact loses up to ~15% volume and inverts some crushed tets; the Phase 4 muscle tests therefore run
+    with bone contact off. Box bones folded the tets over their edges; capsules drape better.
 
 ### Stretch goals
 - Quasi-Newton hyperelastic materials (Liu, Bouaziz, Kavan 2017). GPU local step / Jacobi global solve.

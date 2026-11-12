@@ -17,7 +17,8 @@ constexpr ScalarType kOne = 1.0;
 // the elbow at x = 1; y is up, so flexing the forearm moves it towards +y.
 constexpr ScalarType kElbowX = 1.0;
 constexpr ScalarType kBoneHalfWidth = 0.04;
-constexpr ScalarType kJointGap = 0.05;       // Half the gap between the bone boxes at the elbow.
+constexpr ScalarType kJointGap = 0.05;       // Half the gap between the bones at the elbow.
+constexpr ScalarType kForearmRadius = 0.85 * kBoneHalfWidth;
 constexpr ScalarType kUpperArmStartX = -0.15;
 constexpr ScalarType kForearmEndX = 1.95;
 // Muscle: origin on the upper arm, insertion on the forearm past the elbow.
@@ -74,7 +75,11 @@ MuscleScene::MuscleScene()
       m_cycle_seconds(4.0),
       m_density(1060.0),
       m_resolution(12.0),
+      m_friction(0.3),
+      m_stiffness_contact(1e5),
       m_animate(true),
+      m_bone_contact(true),
+      m_interior_contact(true),
       m_show_wireframe(false),
       m_phase(0.0) {}
 
@@ -110,36 +115,8 @@ void MuscleScene::MakeMuscle() {
   m_mesh.FixOrientation();  // The map preserves orientation; this is a safeguard.
 }
 
-std::vector<unsigned int> MuscleScene::AddBox(const EigenVector3& lo, const EigenVector3& hi,
-                                              std::vector<EigenVector3>* positions) {
-  std::vector<unsigned int> ids;
-  const unsigned int base = m_mesh.NumVertices();
-  for (int axis = 0; axis < 3; ++axis) {
-    const int b = (axis + 1) % 3, c = (axis + 2) % 3;
-    for (int side = 0; side < 2; ++side) {
-      // Quad (0,0) (1,0) (1,1) (0,1) in the (b, c) plane winds counter-clockwise
-      // around e_b x e_c = e_axis, so it faces +axis; reverse it for -axis.
-      const int corners[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-      unsigned int quad[4];
-      for (int k = 0; k < 4; ++k) {
-        const int (&corner)[2] = corners[side == 1 ? k : 3 - k];
-        EigenVector3 p;
-        p[axis] = side == 1 ? hi[axis] : lo[axis];
-        p[b] = corner[0] ? hi[b] : lo[b];
-        p[c] = corner[1] ? hi[c] : lo[c];
-        quad[k] = base + static_cast<unsigned int>(positions->size());
-        positions->push_back(p);
-        ids.push_back(quad[k]);
-      }
-      m_surface_indices.insert(m_surface_indices.end(), {quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]});
-    }
-  }
-  return ids;
-}
-
 void MuscleScene::Build(PDSolver* solver) {
   MakeMuscle();
-  const unsigned int n = m_mesh.NumVertices();
 
   m_surface_indices.clear();
   for (const TetMesh::Triangle& tri : m_mesh.BoundaryTriangles()) {
@@ -151,41 +128,24 @@ void MuscleScene::Build(PDSolver* solver) {
     m_edge_indices.push_back(e[1]);
   }
 
-  // Bone boxes become extra fixed vertices after the muscle's, so they are drawn
-  // with the surface and posed like any other Dirichlet vertex.
-  std::vector<EigenVector3> bone_points;
-  const EigenVector3 half(0.0, kBoneHalfWidth, kBoneHalfWidth);
-  const std::vector<unsigned int> upper_box =
-      AddBox(EigenVector3(kUpperArmStartX, 0, 0) - half, EigenVector3(kElbowX - kJointGap, 0, 0) + half,
-             &bone_points);
-  const std::vector<unsigned int> forearm_box =
-      AddBox(EigenVector3(kElbowX + kJointGap, 0, 0) - 0.85 * half, EigenVector3(kForearmEndX, 0, 0) + 0.85 * half,
-             &bone_points);
-
-  EigenMatrix3x positions(n + bone_points.size(), 3);
-  positions.topRows(n) = m_mesh.vertices;
-  for (size_t k = 0; k < bone_points.size(); ++k) positions.row(n + k) = bone_points[k].transpose();
-  VectorX masses(positions.rows());
-  masses.head(n) = m_mesh.LumpedMasses(m_density);
-  masses.tail(bone_points.size()).setOnes();  // Unused: bone vertices are fixed.
-
   solver->Clear();
-  solver->SetVertices(positions, masses);
+  solver->SetVertices(m_mesh.vertices, m_mesh.LumpedMasses(m_density));
 
-  auto make_bone = [&](const std::vector<unsigned int>& box, const std::vector<unsigned int>& tendon) {
+  // Bones are kinematic: their tendon vertices are fixed (Dirichlet) and
+  // posed with the bone.
+  auto make_bone = [&](const std::vector<unsigned int>& tendon) {
     KinematicBone bone;
     bone.pivot = EigenVector3(kElbowX, 0.0, 0.0);
-    bone.vertices = box;
-    bone.vertices.insert(bone.vertices.end(), tendon.begin(), tendon.end());
+    bone.vertices = tendon;
     bone.rest.resize(bone.vertices.size(), 3);
     for (size_t k = 0; k < bone.vertices.size(); ++k) {
-      bone.rest.row(k) = positions.row(bone.vertices[k]);
+      bone.rest.row(k) = m_mesh.vertices.row(bone.vertices[k]);
       solver->SetFixed(bone.vertices[k]);
     }
     return bone;
   };
-  m_upper_arm = make_bone(upper_box, m_origin_vertices);
-  m_forearm = make_bone(forearm_box, m_insertion_vertices);
+  m_upper_arm = make_bone(m_origin_vertices);
+  m_forearm = make_bone(m_insertion_vertices);
 
   for (size_t t = 0; t < m_mesh.NumTets(); ++t) {
     const TetMesh::Tet& tet = m_mesh.tets[t];
@@ -202,8 +162,51 @@ void MuscleScene::Build(PDSolver* solver) {
     solver->AddConstraint(
         std::make_unique<TetVolumeConstraint>(&m_stiffness_volume, tet, m_mesh.vertices, &kOne, &kOne));
   }
+
+  // Bone colliders, also drawn as the bones: capsules along the bone axes (a
+  // round bone lets the soft belly drape over it, where a box's edges fold the
+  // tets). The upper arm ends kJointGap before the elbow, the forearm starts
+  // kJointGap after it; they stay apart up to 120 degrees of flexion.
+  // With m_interior_contact every free vertex gets a contact slot, so interior
+  // vertices of crushed surface tets cannot slip into a bone either (fewer
+  // inverted tets); otherwise only the boundary vertices do, which slows plain
+  // PD less (each slot's proximal term w ||x - x_k||^2 lags the iteration).
+  if (!m_interior_contact) {
+    std::vector<unsigned int> boundary;
+    for (const TetMesh::Triangle& tri : m_mesh.BoundaryTriangles()) {
+      boundary.insert(boundary.end(), tri.begin(), tri.end());
+    }
+    solver->SetContactVertices(boundary);
+  }
+  solver->SetContactStiffness(&m_stiffness_contact);
+  const Collider upper = Collider::Capsule(EigenVector3(kUpperArmStartX + kBoneHalfWidth, 0, 0),
+                                           EigenVector3(kElbowX - kJointGap - kBoneHalfWidth, 0, 0), kBoneHalfWidth);
+  const Collider fore = Collider::Capsule(EigenVector3(kElbowX + kJointGap + kForearmRadius, 0, 0),
+                                          EigenVector3(kForearmEndX - kForearmRadius, 0, 0), kForearmRadius);
+  m_forearm_rest_centre = fore.translation;
+  m_upper_arm_collider = solver->AddCollider(upper);
+  m_forearm_collider = solver->AddCollider(fore);
+
   solver->Finalize();
-  m_forearm.Apply(solver, ElbowAngleRadians());
+  m_posed_angle = ElbowAngleRadians();
+  PoseForearm(solver, 0.0);
+}
+
+void MuscleScene::PoseForearm(PDSolver* solver, double dt) {
+  const ScalarType angle = ElbowAngleRadians();
+  m_forearm.Apply(solver, angle);
+  for (int k : {m_upper_arm_collider, m_forearm_collider}) {
+    solver->GetCollider(k).enabled = m_bone_contact;
+    solver->GetCollider(k).friction = m_friction;
+  }
+  Collider& c = solver->GetCollider(m_forearm_collider);
+  c.rotation = Eigen::AngleAxis<ScalarType>(angle, EigenVector3::UnitZ()).toRotationMatrix();
+  c.translation = m_forearm.Transform(m_forearm_rest_centre, angle);
+  // Rigid rotation about the elbow: omega = d angle / dt about +z, so the
+  // centre moves with omega x (centre - pivot).
+  c.angular_velocity = EigenVector3(0.0, 0.0, dt > 0.0 ? (angle - m_posed_angle) / dt : 0.0);
+  c.linear_velocity = c.angular_velocity.cross(c.translation - m_forearm.pivot);
+  m_posed_angle = angle;
 }
 
 void MuscleScene::Update(PDSolver* solver, double dt) {
@@ -214,7 +217,7 @@ void MuscleScene::Update(PDSolver* solver, double dt) {
     m_elbow_angle_deg = f * kMaxAnimatedAngleDeg;
     m_activation = f;
   }
-  m_forearm.Apply(solver, ElbowAngleRadians());
+  PoseForearm(solver, dt);
 }
 
 const std::vector<unsigned int>& MuscleScene::LineIndices() const {
@@ -228,6 +231,8 @@ std::vector<SceneParam> MuscleScene::Params() {
       {"Max contraction", &m_max_contraction, 0.0f, 0.7f, false, SceneParam::kNone},
       {"Elbow angle (deg)", &m_elbow_angle_deg, 0.0f, 140.0f, false, SceneParam::kNone},
       {"Cycle (s)", &m_cycle_seconds, 1.0f, 10.0f, false, SceneParam::kNone},
+      {"Bone friction", &m_friction, 0.0f, 2.0f, false, SceneParam::kNone},
+      {"Contact stiffness", &m_stiffness_contact, 1e3f, 1e7f, true, SceneParam::kSystemMatrix},
       {"Fibre stiffness", &m_stiffness_fibre, 1e3f, 1e8f, true, SceneParam::kSystemMatrix},
       {"Passive stiffness", &m_stiffness_strain, 1e2f, 1e8f, true, SceneParam::kSystemMatrix},
       {"Tendon stiffness", &m_stiffness_tendon, 1e4f, 1e9f, true, SceneParam::kSystemMatrix},

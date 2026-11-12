@@ -2,6 +2,7 @@
 #include <memory>
 #include <vector>
 
+#include "Collider.h"
 #include "Constraint.h"
 #include "math_headers.h"
 
@@ -16,6 +17,8 @@ struct PDStepStats {
   ScalarType max_strain = 0.0;        // Max Constraint::Strain after the step.
   ScalarType max_volume_error = 0.0;  // Max Constraint::VolumeError after the step.
   int rejected_iterations = 0;        // Accelerated iterates that raised E (see PDAcceleration).
+  int num_contacts = 0;               // Contact vertices inside a collider after the step.
+  ScalarType max_penetration = 0.0;   // Their deepest penetration (m).
 };
 
 // How the local/global iterates are extrapolated. Every scheme is safeguarded:
@@ -65,6 +68,19 @@ enum class PDAcceleration {
 // parallel give identical positions. Step() makes no heap allocations once the
 // buffers are sized.
 //
+// Contact (Phase 6) uses fixed-weight slots: once a collider exists, every
+// contact vertex i (SetContactVertices, default all free vertices) owns one row
+// G = e_i^T with weight ContactStiffness(), always present in A. Its
+// projection is the closest point outside all colliders: a vertex inside is
+// moved onto the surface, a vertex outside projects onto itself (zero energy).
+// The constraint set changes only when colliders move, which is RHS only, so
+// contact never refactors. A slot with p = x still acts as a proximal term
+// w ||x - x_k||^2 in the next global step, so a larger contact weight slows the
+// convergence of the contact vertices; keep it moderate. After the step,
+// contact vertices still inside a collider lose their approaching normal
+// velocity and get Coulomb friction relative to the collider's surface, with
+// the normal force taken from the slot's spring force w * depth.
+//
 // Each iteration minimises g(x, p) = 1/(2h^2) ||x - y||_M^2 + sum_i w_i/2
 // ||G_i x - p_i||^2 alternately over p and x, so the energy
 // E(x) = min_p g(x, p) never increases across plain iterations.
@@ -94,6 +110,22 @@ class PDSolver {
 
   // Moves a fixed vertex (kinematic target). RHS only, no refactorization.
   void SetFixedTarget(unsigned int vertex, const EigenVector3& target);
+
+  // --- Contact -----------------------------------------------------------------
+  // Adds a kinematic collider and returns its index. Contact slots are part of
+  // the system, so RebuildSystemMatrix() (or Finalize) must follow.
+  int AddCollider(const Collider& collider);
+  // Posing, enabling or changing friction of a collider is RHS only.
+  Collider& GetCollider(int index) { return m_colliders[index]; }
+  const std::vector<Collider>& GetColliders() const { return m_colliders; }
+  // Vertices that get a contact slot (fixed ones are skipped), e.g. the
+  // boundary of a tet mesh; empty means every free vertex. Needs a rebuild.
+  void SetContactVertices(const std::vector<unsigned int>& vertices);
+  // Points the contact slot weight at a value owned by the scene (null: use
+  // m_stiffness_contact), so a slider can change it; then RebuildSystemMatrix().
+  // Reset by Clear().
+  void SetContactStiffness(const ScalarType* stiffness) { m_contact_stiffness = stiffness; }
+  ScalarType ContactStiffness() const { return m_contact_stiffness ? *m_contact_stiffness : m_stiffness_contact; }
 
   // --- Time stepping ---------------------------------------------------------
   // Advances by frame time dt (seconds) using fixed sub-steps of m_h, so the
@@ -126,6 +158,7 @@ class PDSolver {
   unsigned int NumVertices() const { return static_cast<unsigned int>(m_positions.rows()); }
   unsigned int NumFixed() const { return static_cast<unsigned int>(m_fixed_vertices.size()); }
   size_t NumConstraints() const { return m_constraints.size(); }
+  size_t NumContactSlots() const { return m_contact_slots.size(); }
   bool IsFixed(unsigned int vertex) const { return m_free_index[vertex] < 0; }
   bool IsReady() const { return m_system_ready; }
   const EigenMatrix3x& GetPositions() const { return m_positions; }
@@ -149,6 +182,7 @@ class PDSolver {
   ScalarType m_h;                    // Fixed time step (s).
   ScalarType m_gravity_constant;     // Acceleration along -y (m/s^2).
   ScalarType m_stiffness_drag;
+  ScalarType m_stiffness_contact;    // Default contact slot weight (see SetContactStiffness).
   ScalarType m_damping_coefficient;  // Fraction of velocity removed per step.
   int m_iterations_per_step;
   int m_max_substeps_per_frame;
@@ -168,7 +202,7 @@ class PDSolver {
   // Batch types: one per built-in ConstraintKind, plus strain + volume pairs on
   // the same tet. Both have G = Dm^-T E, hence the same F, so a pair shares one
   // SVD (the most expensive part of the local step).
-  enum class BatchKind { kSpring, kTetStrainVolume, kTetStrain, kTetVolume, kTetFibre, kGeneric };
+  enum class BatchKind { kSpring, kTetStrainVolume, kTetStrain, kTetVolume, kTetFibre, kContact, kGeneric };
   struct ConstraintBatch {
     BatchKind kind = BatchKind::kGeneric;
     int first_row = 0;
@@ -180,6 +214,7 @@ class PDSolver {
     // kTetStrainVolume: strain range in param0/1, volume range in param2/3.
     std::vector<const ScalarType*> param0, param1, param2, param3;
     std::vector<EigenVector3> fibre;          // kTetFibre: unit rest fibre direction.
+    const std::vector<Collider>* colliders = nullptr;  // kContact.
     std::vector<const Constraint*> generic;   // kGeneric: projected through the virtual interface.
     std::vector<int> generic_rows;            // kGeneric: first row of each element, plus the end.
     int Size() const { return static_cast<int>(weight.size()); }
@@ -206,11 +241,19 @@ class PDSolver {
   void scatterFree(const EigenMatrix3x& u, EigenMatrix3x* x) const;
   // Sizes every per-step buffer for the current system.
   void allocateBuffers();
+  // Post-step contact response on m_positions / m_velocities (see the class
+  // comment) and the contact statistics.
+  void contactVelocityPass();
   // Anderson: next iterate from the plain iterate g and residual f = g - u.
   void andersonUpdate(const EigenMatrix3x& g, const EigenMatrix3x& f, EigenMatrix3x* u_next);
 
   std::vector<std::unique_ptr<Constraint>> m_constraints;
   std::unique_ptr<AttachmentConstraint> m_drag_constraint;  // Null when nothing is dragged.
+  std::vector<Collider> m_colliders;
+  std::vector<unsigned int> m_contact_vertices;  // Requested (empty = all free).
+  std::vector<unsigned int> m_contact_slots;     // Vertices with a slot, in row order (set on rebuild).
+  const ScalarType* m_contact_stiffness = nullptr;  // Scene-owned slot weight, or null.
+  ScalarType m_contact_weight = 0.0;                // Slot weight the system was factored with.
 
   EigenMatrix3x m_positions;          // N x 3, row i = vertex i.
   EigenMatrix3x m_velocities;         // N x 3.

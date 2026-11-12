@@ -61,6 +61,7 @@ void SurfaceRenderer::Draw(const GLCore::Utils::PerspectiveCameraController& cam
                      glm::value_ptr(camera.GetCamera().GetViewProjectionMatrix()));
   const glm::vec3 eye = camera.GetCamera().GetPosition();
   glUniform3f(glGetUniformLocation(program, "u_CameraPosition"), eye.x, eye.y, eye.z);
+  glUniform3f(glGetUniformLocation(program, "u_Color"), m_color.x, m_color.y, m_color.z);
 
   // Push the surface back slightly so a wireframe drawn on top stays visible.
   glEnable(GL_POLYGON_OFFSET_FILL);

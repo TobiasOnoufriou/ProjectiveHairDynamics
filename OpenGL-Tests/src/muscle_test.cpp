@@ -200,15 +200,16 @@ TEST(MuscleSceneTest, BuildsValidMuscleAndBones) {
   EXPECT_GT(tendon, 0u);
   EXPECT_LT(tendon, mesh.NumTets() / 2);
 
-  // Muscle vertices come first; the rest are bone box corners, all fixed.
-  EXPECT_EQ(sim.NumVertices(), mesh.NumVertices() + 48);
-  for (unsigned int i = mesh.NumVertices(); i < sim.NumVertices(); ++i) EXPECT_TRUE(sim.IsFixed(i));
+  // The solver vertices are the muscle's; the bones are capsule colliders
+  // whose tendon vertices are fixed.
+  EXPECT_EQ(sim.NumVertices(), mesh.NumVertices());
+  EXPECT_EQ(sim.GetColliders().size(), 2u);
   for (const KinematicBone* bone : {&scene.UpperArm(), &scene.Forearm()}) {
-    EXPECT_GT(bone->vertices.size(), 24u);  // Box plus attached tendon vertices.
+    EXPECT_GT(bone->vertices.size(), 0u);
     for (unsigned int v : bone->vertices) EXPECT_TRUE(sim.IsFixed(v));
   }
-  // The muscle surface is closed and the boxes are 12 triangles each.
-  EXPECT_EQ(scene.SurfaceIndices().size(), 3 * (mesh.BoundaryTriangles().size() + 24));
+  EXPECT_EQ(sim.NumFixed(), scene.UpperArm().vertices.size() + scene.Forearm().vertices.size());
+  EXPECT_EQ(scene.SurfaceIndices().size(), 3 * mesh.BoundaryTriangles().size());
   EXPECT_NEAR(sim.ConstraintEnergy(sim.GetPositions()), 0.0, 1e-16);
 }
 
@@ -234,8 +235,13 @@ TEST(MuscleSceneTest, ElbowRotatesForearmOnly) {
 
 // Animated flex/extend with activation: moving targets between steps, but within
 // each step the PD energy must still never increase, and the muscle keeps its volume.
+// Bone contact is off here (and only the boundary has the then idle contact
+// slots, whose proximal term slows plain PD): with contact the soft belly
+// slumps onto the upper arm, see ContactSceneTest.
 TEST(MuscleSceneTest, AnimationKeepsEnergyMonotoneAndVolume) {
   MuscleScene scene;
+  scene.m_bone_contact = false;
+  scene.m_interior_contact = false;
   PDSolver sim;
   sim.m_track_energy = true;
   scene.Build(&sim);
@@ -260,6 +266,8 @@ TEST(MuscleSceneTest, ActiveFlexionContractsAndBulges) {
   for (int active = 0; active < 2; ++active) {
     MuscleScene scene;
     scene.m_animate = false;
+    scene.m_bone_contact = false;  // Isolates the fibre model.
+    scene.m_interior_contact = false;
     PDSolver sim;
     sim.m_gravity_constant = 0.0;
     scene.Build(&sim);
