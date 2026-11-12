@@ -20,6 +20,7 @@ PDSolver::PDSolver()
       m_max_substeps_per_frame(4),
       m_track_energy(false),
       m_parallel_local_step(false),
+      m_drop_backlog_when_slow(true),
       m_row_offset(1, 0),
       m_system_ready(false),
       m_time_accumulator(0.0) {}
@@ -215,9 +216,20 @@ void PDSolver::Update(float dt) {
   if (!m_system_ready) return;
   // Clamp very long frames (e.g. window drag) so we don't spiral.
   m_time_accumulator += std::min(static_cast<double>(dt), m_h * m_max_substeps_per_frame);
+  const auto start = std::chrono::steady_clock::now();
+  int steps = 0;
   while (m_time_accumulator >= m_h) {
     Step();
     m_time_accumulator -= m_h;
+    ++steps;
+    // Steps cost more wall time than the time they simulate: more sub-steps
+    // would only lengthen this frame and grow the next frame's backlog. Drop
+    // it and run in slow motion instead.
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (m_drop_backlog_when_slow && elapsed > steps * m_h) {
+      m_time_accumulator = 0.0;
+      break;
+    }
   }
 }
 
@@ -257,29 +269,35 @@ ScalarType PDSolver::ConstraintEnergy(const EigenMatrix3x& x) const {
   return localStep(x, &gx, &p);
 }
 
-ScalarType PDSolver::MaxStrain(const EigenMatrix3x& x) const {
-  const size_t num = numLaidOut(x);
-  if (num == 0) return 0.0;
+void PDSolver::maxMetrics(const EigenMatrix3x& x, ScalarType* strain, ScalarType* volume_error) const {
+  if (strain) *strain = 0.0;
+  if (volume_error) *volume_error = 0.0;
+  const int num = static_cast<int>(numLaidOut(x));
+  if (num == 0) return;
   const RowMatrix3x gx = m_j * x;
-  ScalarType worst = 0.0;
-  for (size_t k = 0; k < num; ++k) {
+  // Per-constraint values, then a serial max (MSVC's OpenMP 2.0 has no max reduction).
+  std::vector<ScalarType> s(strain ? num : 0), v(volume_error ? num : 0);
+#pragma omp parallel for schedule(static) if (m_parallel_local_step)
+  for (int k = 0; k < num; ++k) {
     const int first = m_row_offset[k];
-    worst = std::max(worst, activeConstraint(k).Strain(gx.middleRows(first, m_row_offset[k + 1] - first)));
+    const ConstRows rows = gx.middleRows(first, m_row_offset[k + 1] - first);
+    if (strain) s[k] = activeConstraint(k).Strain(rows);
+    if (volume_error) v[k] = activeConstraint(k).VolumeError(rows);
   }
-  return worst;
+  if (strain) *strain = *std::max_element(s.begin(), s.end());
+  if (volume_error) *volume_error = *std::max_element(v.begin(), v.end());
+}
+
+ScalarType PDSolver::MaxStrain(const EigenMatrix3x& x) const {
+  ScalarType strain = 0.0;
+  maxMetrics(x, &strain, nullptr);
+  return strain;
 }
 
 ScalarType PDSolver::MaxVolumeError(const EigenMatrix3x& x) const {
-  const size_t num = numLaidOut(x);
-  if (num == 0) return 0.0;
-  const RowMatrix3x gx = m_j * x;
-  ScalarType worst = 0.0;
-  for (size_t k = 0; k < num; ++k) {
-    const int first = m_row_offset[k];
-    worst = std::max(worst,
-                     activeConstraint(k).VolumeError(gx.middleRows(first, m_row_offset[k + 1] - first)));
-  }
-  return worst;
+  ScalarType volume_error = 0.0;
+  maxMetrics(x, nullptr, &volume_error);
+  return volume_error;
 }
 
 void PDSolver::Step() {
@@ -328,6 +346,5 @@ void PDSolver::Step() {
 
   m_stats.step_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-  m_stats.max_strain = MaxStrain(m_positions);
-  m_stats.max_volume_error = MaxVolumeError(m_positions);
+  maxMetrics(m_positions, &m_stats.max_strain, &m_stats.max_volume_error);
 }

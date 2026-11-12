@@ -25,6 +25,8 @@ project "OpenGL-Tests"
     "../OpenGL-Sandbox/src/TetMesh.cpp",
     "../OpenGL-Sandbox/src/TetScene.h",
     "../OpenGL-Sandbox/src/TetScene.cpp",
+    "../OpenGL-Sandbox/src/MuscleScene.h",
+    "../OpenGL-Sandbox/src/MuscleScene.cpp",
     "../OpenGL-Sandbox/src/Constraint.h",
     "../OpenGL-Sandbox/src/TetConstraints.h",
     "../OpenGL-Sandbox/src/TetConstraints.cpp",

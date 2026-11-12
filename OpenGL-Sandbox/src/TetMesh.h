@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,9 @@ struct TetMesh {
 
   EigenMatrix3x vertices;  // N x 3, row i = vertex i.
   std::vector<Tet> tets;
+  // Optional muscle fibre direction per tet (unit vector in rest space), same
+  // order as tets. Empty if the mesh has no fibres (e.g. loaded from TetGen).
+  std::vector<EigenVector3> fibres;
 
   unsigned int NumVertices() const { return static_cast<unsigned int>(vertices.rows()); }
   size_t NumTets() const { return tets.size(); }
@@ -27,6 +31,13 @@ struct TetMesh {
   ScalarType TotalVolume() const;
   // Swaps two vertices of every negatively oriented tet. Returns how many were flipped.
   size_t FixOrientation();
+
+  // Mean of the 4 vertices of tet t at positions x.
+  EigenVector3 Centroid(size_t t, const EigenMatrix3x& x) const;
+  EigenVector3 Centroid(size_t t) const { return Centroid(t, vertices); }
+  // Samples a direction field at every tet centroid (rest pose) and stores it,
+  // normalised, as the tet's fibre direction. A zero direction stays zero.
+  void SetFibresFromField(const std::function<EigenVector3(const EigenVector3&)>& field);
 
   // Lumped masses: each tet's mass density * volume is split equally over its 4 vertices.
   VectorX LumpedMasses(ScalarType density) const;
@@ -42,6 +53,7 @@ struct TetMesh {
 // sharing the cube's main diagonal (Kuhn / Freudenthal subdivision). Every cube is
 // cut the same way, so neighbouring cubes share their face diagonals and the mesh
 // is conforming. Vertex (i, j, k) has index i + (nx + 1) * (j + (ny + 1) * k).
+// Fibres run along the longest axis of the box (x on ties).
 TetMesh MakeTetBeam(unsigned int nx, unsigned int ny, unsigned int nz, const EigenVector3& size,
                     const EigenVector3& origin = EigenVector3::Zero());
 

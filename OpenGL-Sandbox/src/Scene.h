@@ -38,4 +38,8 @@ class Scene {
     return kNone;
   }
   virtual std::vector<SceneParam> Params() { return {}; }
+  // Called once per frame before PDSolver::Update with the frame time, to drive
+  // kinematic targets (e.g. bone animation). Must only move targets (RHS),
+  // never change the system matrix.
+  virtual void Update(PDSolver* /*solver*/, double /*dt*/) {}
 };

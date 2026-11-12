@@ -4,6 +4,7 @@
 #include "GLCore/Core/Input.h"
 #include "GLCore/Core/MouseButtonCodes.h"
 #include "HairScene.h"
+#include "MuscleScene.h"
 #include "TetScene.h"
 
 #include <algorithm>
@@ -16,7 +17,7 @@ using namespace GLCore::Utils;
 
 namespace {
 
-// Selectable scenes. MuscleScene etc. get added here.
+// Selectable scenes.
 struct SceneEntry {
   const char* name;
   std::unique_ptr<Scene> (*create)();
@@ -24,6 +25,7 @@ struct SceneEntry {
 const SceneEntry kScenes[] = {
   {"Hair", []() -> std::unique_ptr<Scene> { return std::make_unique<HairScene>(); }},
   {"Tet beam", []() -> std::unique_ptr<Scene> { return std::make_unique<TetScene>(); }},
+  {"Muscle", []() -> std::unique_ptr<Scene> { return std::make_unique<MuscleScene>(); }},
 };
 constexpr int kNumScenes = static_cast<int>(sizeof(kScenes) / sizeof(kScenes[0]));
 
@@ -106,6 +108,7 @@ int SandboxLayer::PickParticle(float mouse_x, float mouse_y, float* out_ndc_dept
   float best_dist2 = kPickRadiusPx * kPickRadiusPx;
   float best_depth = 0.0f;
   for (Eigen::Index i = 0; i < pos.rows(); ++i) {
+    if (m_sim->IsFixed(static_cast<unsigned int>(i))) continue;  // Pinned/bone vertices can't be dragged.
     glm::vec4 clip = vp * glm::vec4(pos(i, 0), pos(i, 1), pos(i, 2), 1.0);
     if (clip.w <= 1e-6f) continue;  // Behind the camera.
     glm::vec3 ndc = glm::vec3(clip) / clip.w;
@@ -191,6 +194,7 @@ void SandboxLayer::OnUpdate(Timestep ts)
   this->line_->DrawDebugLine(this->camera_controller_);
 
   if (m_run_sim) {
+    m_scene->Update(m_sim.get(), ts.GetSeconds());  // Kinematic targets (bones) first.
     m_sim->Update(ts.GetSeconds());
     UploadStrands();
   }
@@ -246,8 +250,12 @@ void SandboxLayer::DrawSimulationTab() {
     ImGui::EndCombo();
   }
 
+#ifdef _DEBUG
+  ImGui::TextColored(ImVec4(1, 0.6f, 0.2f, 1), "Debug build: the solver runs 10-100x slower. Use Release.");
+#endif
   ImGui::Checkbox("Run", &m_run_sim);
   if (ImGui::Button("Step") && !m_run_sim) {
+    m_scene->Update(m_sim.get(), m_sim->m_h);
     m_sim->Step();
     UploadStrands();
   }
@@ -287,6 +295,15 @@ void SandboxLayer::DrawSimulationTab() {
     if (ImGui::Checkbox("Show tet edges", &tet->m_show_wireframe)) UploadStrands();
     ImGui::Text("%zu tets, %zu surface triangles, volume %.4f m^3", tet->Mesh().NumTets(),
                 tet->SurfaceIndices().size() / 3, tet->Mesh().TotalVolume());
+  }
+  if (auto* muscle = dynamic_cast<MuscleScene*>(m_scene.get())) {
+    ImGui::Checkbox("Animate elbow + activation", &muscle->m_animate);
+    if (ImGui::Checkbox("Show tet edges", &muscle->m_show_wireframe)) UploadStrands();
+    // Current muscle volume over rest volume (the bones are not part of the mesh).
+    const TetMesh& mesh = muscle->Mesh();
+    ScalarType volume = 0.0;
+    for (size_t t = 0; t < mesh.NumTets(); ++t) volume += mesh.SignedVolume(t, m_sim->GetPositions());
+    ImGui::Text("%zu tets, muscle volume %.1f%% of rest", mesh.NumTets(), 100.0 * volume / mesh.TotalVolume());
   }
   if (rebuild_scene) {
     m_sim->EndDrag();

@@ -24,10 +24,15 @@ The hair solver must keep working as a regression scene while the muscle work la
     declares `NumRows()`, its `G` entries (`AddG`), a `Weight()`, and `Project(Gx) -> p`, which may only write its
     own slice. The solver computes energies `w/2 ||Gx - p||^2` and assembles LHS/RHS.
   - `TetConstraints.*` - per-tet `G = Dm^-T E` (so `Gx = F^T`), corotational strain (clamped signed SVD) and volume
-    (det F range, Gauss-Newton on singular values) constraints, weighted by stiffness * rest volume.
-  - `TetMesh.*` - tet mesh data (positive-orientation convention), procedural Kuhn-subdivided beam, TetGen
+    (det F range, Gauss-Newton on singular values) constraints, weighted by stiffness * rest volume. Active fibre
+    constraint: one row `G = a^T Dm^-T E` (so `Gx = (F a)^T`), projected to stretch `1 - activation * max_contraction`.
+  - `TetMesh.*` - tet mesh data (positive-orientation convention), optional per-tet fibre directions, procedural Kuhn-subdivided beam, TetGen
     `.node/.ele` load/save, boundary triangles, edges, lumped masses, vertex normals. No GL, tested headless.
   - `TetScene.*` - clamped cantilever tet beam with a strain + volume constraint per tet.
+  - `MuscleScene.*` - biceps-style fusiform muscle between a static upper-arm bone and a hinged forearm.
+    `KinematicBone` = rigid set of fixed vertices (render box + attached tendon vertices) posed via
+    `SetFixedTarget` only. Tendon tets are stiff, belly tets get a `TetFibreConstraint`. `Scene::Update` drives
+    the elbow/activation animation each frame before `PDSolver::Update`.
   - `SurfaceRenderer.*` - lit triangle surface (`Scene::SurfaceIndices`), normals recomputed per upload.
   - `Scene.h`, `HairScene.*` - scene builders that fill a `PDSolver` and expose tunable `SceneParam`s (no ImGui, so
     they are testable headless). New scenes are registered in `kScenes` in `SandboxLayer.cpp`.
@@ -113,12 +118,16 @@ Work through phases in order. Each phase should leave the app building, running 
       `w G^T p` into `b`. ImGui toggle for an OpenMP-parallel projection loop (`m_parallel_local_step`); compare
       ms/step on and off. Test: serial and parallel steps give identical positions.
 
-### Phase 4: Muscle model
-- [ ] Per-tet fibre direction (long axis for a beam; later a vector field).
-- [ ] Anisotropic fibre constraint whose target stretch along the fibre depends on an activation `a in [0,1]`
-      (rest shape changes, matrix does not). ImGui activation slider.
-- [ ] Tendons and bones: attach end vertices to kinematic bone boxes; animate bones (e.g. elbow flex) by moving
+### Phase 4: Muscle model (done)
+- [x] Per-tet fibre direction (`TetMesh::fibres`; long axis for a beam, `SetFibresFromField` for a vector field;
+      the muscle's fibres follow its spindle shape).
+- [x] Anisotropic fibre constraint whose target stretch along the fibre depends on an activation `a in [0,1]`
+      (projection changes, matrix does not). ImGui activation slider.
+- [x] Tendons and bones: attach end vertices to kinematic bone boxes; animate bones (elbow flex) by moving
       attachment targets only. Demo: biceps-style muscle between two bones, contracting and bulging.
+- Notes: at 120 deg flexion the muscle passes through the elbow region (no contact until Phase 6), so tets near
+  the insertion are strongly stretched. Default 12 cells (1152 tets) costs ~21 ms/step serial, ~8 ms with OpenMP;
+  the per-tet SVDs dominate (Phase 5).
 
 ### Phase 5: Performance
 - [ ] Flatten constraints into per-type arrays; fold constant RHS terms into `b0`; no per-step allocations.

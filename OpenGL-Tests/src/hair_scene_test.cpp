@@ -156,6 +156,8 @@ TEST(HairSceneTest, UpdateIsFrameRateIndependent) {
   scene.Build(&a);
   HairScene scene_b = SingleStrand(EigenVector3(1.0, 0.0, 0.0));
   scene_b.Build(&b);
+  // Wall-clock dependent; must not kick in (e.g. in slow Debug builds).
+  a.m_drop_backlog_when_slow = b.m_drop_backlog_when_slow = false;
 
   for (int i = 0; i < 60; ++i) a.Update(1.0f / 60.0f);   // 60 fps for 1 s.
   for (int i = 0; i < 30; ++i) b.Update(1.0f / 30.0f);   // 30 fps for 1 s.

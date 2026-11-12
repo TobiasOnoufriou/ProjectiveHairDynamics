@@ -64,7 +64,11 @@ class PDSolver {
 
   // --- Time stepping ---------------------------------------------------------
   // Advances by frame time dt (seconds) using fixed sub-steps of m_h, so the
-  // simulation speed does not depend on the frame rate.
+  // simulation speed does not depend on the frame rate. If steps run slower
+  // than real time (and m_drop_backlog_when_slow is set), the remaining
+  // backlog is dropped after the first such step: the simulation then runs in
+  // slow motion at one step per frame instead of spiralling into ever longer
+  // frames of m_max_substeps_per_frame steps each.
   void Update(float dt);
   // A single fixed time step.
   void Step();
@@ -113,7 +117,8 @@ class PDSolver {
   int m_iterations_per_step;
   int m_max_substeps_per_frame;
   bool m_track_energy;               // Record PDStepStats::energy (costs one extra local pass).
-  bool m_parallel_local_step;        // Project constraints with OpenMP threads.
+  bool m_parallel_local_step;        // Project constraints (and metrics) with OpenMP threads.
+  bool m_drop_backlog_when_slow;     // See Update(). Off for deterministic sub-stepping.
 
  private:
   // Inertial part 1/(2h^2) sum_free m_i ||x_i - y_i||^2.
@@ -125,6 +130,9 @@ class PDSolver {
   const Constraint& activeConstraint(size_t k) const;
   size_t numActiveConstraints() const;
   size_t numLaidOut(const EigenMatrix3x& x) const;
+  // Max Constraint::Strain and VolumeError at x in one pass (parallel with
+  // m_parallel_local_step). Either output may be null.
+  void maxMetrics(const EigenMatrix3x& x, ScalarType* strain, ScalarType* volume_error) const;
 
   std::vector<std::unique_ptr<Constraint>> m_constraints;
   std::unique_ptr<AttachmentConstraint> m_drag_constraint;  // Null when nothing is dragged.

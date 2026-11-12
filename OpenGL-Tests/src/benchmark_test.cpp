@@ -6,6 +6,7 @@
 
 #include "gtest/gtest.h"
 #include "HairScene.h"
+#include "MuscleScene.h"
 #include "PDSolver.h"
 #include "TetScene.h"
 
@@ -42,6 +43,28 @@ TEST(PDSolverBenchmark, DISABLED_ParallelLocalStep) {
       const int steps = 50;
       const auto t0 = std::chrono::steady_clock::now();
       for (int i = 0; i < steps; ++i) sim.Step();
+      const double ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      std::printf("%5zu tets, parallel=%d: %.3f ms/step\n", scene.Mesh().NumTets(), parallel, ms / steps);
+    }
+  }
+}
+
+// Muscle scene (strain + volume + fibre per belly tet) while the elbow animates.
+TEST(PDSolverBenchmark, DISABLED_MuscleScene) {
+  for (double cells : {8.0, 12.0, 16.0, 24.0}) {
+    for (bool parallel : {false, true}) {
+      MuscleScene scene;
+      scene.m_resolution = cells;
+      PDSolver sim;
+      sim.m_parallel_local_step = parallel;
+      scene.Build(&sim);
+      const int steps = 60;
+      const auto t0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < steps; ++i) {
+        scene.Update(&sim, sim.m_h);
+        sim.Step();
+      }
       const double ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
       std::printf("%5zu tets, parallel=%d: %.3f ms/step\n", scene.Mesh().NumTets(), parallel, ms / steps);

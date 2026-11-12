@@ -67,6 +67,21 @@ size_t TetMesh::FixOrientation() {
   return flipped;
 }
 
+EigenVector3 TetMesh::Centroid(size_t t, const EigenMatrix3x& x) const {
+  EigenVector3 c = EigenVector3::Zero();
+  for (unsigned int v : tets[t]) c += x.row(v).transpose();
+  return 0.25 * c;
+}
+
+void TetMesh::SetFibresFromField(const std::function<EigenVector3(const EigenVector3&)>& field) {
+  fibres.resize(tets.size());
+  for (size_t t = 0; t < tets.size(); ++t) {
+    const EigenVector3 d = field(Centroid(t));
+    const ScalarType len = d.norm();
+    fibres[t] = len > 0.0 ? EigenVector3(d / len) : EigenVector3::Zero();
+  }
+}
+
 VectorX TetMesh::LumpedMasses(ScalarType density) const {
   VectorX m = VectorX::Zero(vertices.rows());
   for (size_t t = 0; t < tets.size(); ++t) {
@@ -141,6 +156,12 @@ TetMesh MakeTetBeam(unsigned int nx, unsigned int ny, unsigned int nz, const Eig
         }
       }
   mesh.FixOrientation();  // Odd permutations come out negatively oriented.
+
+  int long_axis = 0;
+  for (int a = 1; a < 3; ++a) {
+    if (size[a] > size[long_axis]) long_axis = a;
+  }
+  mesh.fibres.assign(mesh.tets.size(), EigenVector3::Unit(long_axis));
   return mesh;
 }
 

@@ -7,16 +7,21 @@
 TetConstraint::TetConstraint(const ScalarType* stiffness, const std::array<unsigned int, 4>& tet,
                              const EigenMatrix3x& rest)
     : Constraint(stiffness), m_tet(tet) {
+  m_g = RestG(tet, rest, &m_rest_volume);
+}
+
+Eigen::Matrix<ScalarType, 3, 4> TetConstraint::RestG(const std::array<unsigned int, 4>& tet,
+                                                     const EigenMatrix3x& rest, ScalarType* rest_volume) {
   const EigenVector3 x0 = rest.row(tet[0]).transpose();
   EigenMatrix3 dm;
   for (int k = 0; k < 3; ++k) dm.col(k) = rest.row(tet[k + 1]).transpose() - x0;
-  m_rest_volume = std::abs(dm.determinant()) / 6.0;
+  *rest_volume = std::abs(dm.determinant()) / 6.0;
 
   Eigen::Matrix<ScalarType, 3, 4> e;
   e << -1, 1, 0, 0,
        -1, 0, 1, 0,
        -1, 0, 0, 1;
-  m_g = dm.inverse().transpose() * e;
+  return dm.inverse().transpose() * e;
 }
 
 void TetConstraint::AddG(int first_row, std::vector<SparseMatrixTriplet>* triplets) const {
@@ -86,4 +91,41 @@ void TetVolumeConstraint::Project(const ConstRows& gx, Rows p) const {
     s = s0 + d;
   }
   p = (u * s.asDiagonal() * v.transpose()).transpose();
+}
+
+TetFibreConstraint::TetFibreConstraint(const ScalarType* stiffness, const std::array<unsigned int, 4>& tet,
+                                       const EigenMatrix3x& rest, const EigenVector3& fibre,
+                                       const ScalarType* activation, const ScalarType* max_contraction)
+    : Constraint(stiffness),
+      m_tet(tet),
+      m_fibre(fibre.normalized()),
+      m_activation(activation),
+      m_max_contraction(max_contraction) {
+  // (F a)^T = a^T F^T = a^T (Dm^-T E X_t).
+  m_g = m_fibre.transpose() * TetConstraint::RestG(tet, rest, &m_rest_volume);
+}
+
+void TetFibreConstraint::AddG(int first_row, std::vector<SparseMatrixTriplet>* triplets) const {
+  for (int c = 0; c < 4; ++c) triplets->emplace_back(first_row, m_tet[c], m_g(0, c));
+}
+
+ScalarType TetFibreConstraint::TargetStretch() const {
+  const ScalarType a = std::min(std::max(*m_activation, 0.0), 1.0);
+  return 1.0 - a * *m_max_contraction;
+}
+
+void TetFibreConstraint::Project(const ConstRows& gx, Rows p) const {
+  const ScalarType target = TargetStretch();
+  const ScalarType len = gx.row(0).norm();
+  if (len < 1e-12) {
+    // Fibre collapsed to a point: every direction is equally close.
+    p.row(0) = target * m_fibre.transpose();
+  } else {
+    p.row(0) = (target / len) * gx.row(0);
+  }
+}
+
+ScalarType TetFibreConstraint::Strain(const ConstRows& gx) const {
+  const ScalarType target = TargetStretch();
+  return std::abs(gx.row(0).norm() - target) / std::max(target, 1e-12);
 }
