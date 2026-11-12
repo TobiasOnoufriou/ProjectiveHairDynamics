@@ -27,6 +27,11 @@ using RowMatrix3x = Eigen::Matrix<ScalarType, Eigen::Dynamic, 3, Eigen::RowMajor
 using ConstRows = Eigen::Ref<const RowMatrix3x>;
 using Rows = Eigen::Ref<RowMatrix3x>;
 
+// Constraint types the solver flattens into per-type arrays with an inlined
+// (non-virtual) projection kernel. Anything else, e.g. the drag attachment or
+// a user-defined constraint, is projected through the virtual Project().
+enum class ConstraintKind { kGeneric, kSpring, kTetStrain, kTetVolume, kTetFibre };
+
 class Constraint {
  public:
   explicit Constraint(const ScalarType* stiffness) : m_stiffness(stiffness) {}
@@ -49,6 +54,11 @@ class Constraint {
   virtual ScalarType Strain(const ConstRows& /*gx*/) const { return 0.0; }
   // Relative volume change |det F - 1| (volumetric constraints only).
   virtual ScalarType VolumeError(const ConstRows& /*gx*/) const { return 0.0; }
+
+  // Non-generic kinds are final classes whose data the solver copies into flat
+  // arrays in RebuildSystemMatrix(); later changes to such an object are not
+  // seen until the next rebuild (values behind pointers, e.g. activation, are).
+  virtual ConstraintKind Kind() const { return ConstraintKind::kGeneric; }
 
  protected:
   // Points at a parameter owned by the scene or solver so stiffness can be
@@ -85,7 +95,7 @@ class AttachmentConstraint : public Constraint {
 
 // Keeps two particles at a rest distance. Used for both stretch (i, i+1) and
 // bending (i, i+2) springs along a strand. G = e_p0^T - e_p1^T.
-class SpringConstraint : public Constraint {
+class SpringConstraint final : public Constraint {
  public:
   SpringConstraint(const ScalarType* stiffness, unsigned int p0, unsigned int p1,
                    ScalarType rest_length)
@@ -96,25 +106,29 @@ class SpringConstraint : public Constraint {
   unsigned int GetConstrainedVertexIndex2() const { return m_p1; }
 
   int NumRows() const override { return 1; }
+  ConstraintKind Kind() const override { return ConstraintKind::kSpring; }
   void AddG(int first_row, std::vector<SparseMatrixTriplet>* triplets) const override {
     triplets->emplace_back(first_row, m_p0, 1.0);
     triplets->emplace_back(first_row, m_p1, -1.0);
   }
+  void Project(const ConstRows& gx, Rows p) const override {
+    p.row(0) = ProjectSpring(gx.row(0).transpose(), m_rest_length).transpose();
+  }
+  ScalarType Strain(const ConstRows& gx) const override {
+    return SpringStrain(gx.row(0).transpose(), m_rest_length);
+  }
 
+  // Kernels shared with the solver's flattened loop. d = x0 - x1.
   // Projection: the spring vector with its length reset to the rest length,
   // so the energy is w/2 (|x0 - x1| - L)^2. A degenerate (zero-length) spring
   // has no direction; any vector of length L is then a closest point, so pick x.
-  void Project(const ConstRows& gx, Rows p) const override {
-    const ScalarType len = gx.row(0).norm();
-    if (len < 1e-12) {
-      p.row(0) << m_rest_length, 0.0, 0.0;
-    } else {
-      p.row(0) = (m_rest_length / len) * gx.row(0);
-    }
+  static EigenVector3 ProjectSpring(const EigenVector3& d, ScalarType rest_length) {
+    const ScalarType len = d.norm();
+    if (len < 1e-12) return EigenVector3(rest_length, 0.0, 0.0);
+    return (rest_length / len) * d;
   }
-
-  ScalarType Strain(const ConstRows& gx) const override {
-    return std::abs(gx.row(0).norm() - m_rest_length) / m_rest_length;
+  static ScalarType SpringStrain(const EigenVector3& d, ScalarType rest_length) {
+    return std::abs(d.norm() - rest_length) / rest_length;
   }
 
  private:

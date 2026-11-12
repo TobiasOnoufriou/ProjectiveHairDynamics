@@ -19,7 +19,11 @@ The hair solver must keep working as a regression scene while the muscle work la
     from the system, constraint list stacked into one sparse `J` (A = M/h^2 + J^T W J), prefactored `SimplicialLLT`
     of the free block, race-free local step (each constraint projects into its own rows of a projection buffer,
     optional OpenMP via `m_parallel_local_step`, gather `J^T W P` is one sparse product), fixed time step with
-    accumulator, per-step stats (ms/step, energy per iteration, max strain, max volume error).
+    accumulator, per-step stats (ms/step split into local/global, energy per iteration, max strain, max volume error).
+    `RebuildSystemMatrix` flattens the built-in constraint kinds (`Constraint::Kind()`) into per-type `ConstraintBatch`
+    arrays with inlined kernels; strain + volume constraints on the same tet are paired and share one SVD; other
+    constraints (drag, user types) go through the virtual `Project`. Optional safeguarded Chebyshev / Anderson
+    acceleration (`m_acceleration`). `Step()` makes no heap allocations once the buffers are sized.
   - `Constraint.h` - PD constraint interface plus `AttachmentConstraint` (soft drag) and `SpringConstraint`. A constraint
     declares `NumRows()`, its `G` entries (`AddG`), a `Weight()`, and `Project(Gx) -> p`, which may only write its
     own slice. The solver computes energies `w/2 ||Gx - p||^2` and assembles LHS/RHS.
@@ -39,8 +43,11 @@ The hair solver must keep working as a regression scene while the muscle work la
   - `SandboxLayer.*` - scene selection, mouse picking/dragging, ImGui panels (Simulation, Metrics, Camera).
   - `StrandRenderer.*` - draws strands as GL lines. `Mesh.*`, `ModelLoader.*` - assimp model loading/rendering.
   - `math_headers.h` - Eigen typedefs (`ScalarType = double`, `EigenMatrix3x` = N x 3, row i = particle i).
-- `OpenGL-Tests/` - googletest project. Compiles `Simulation.cpp` and `math_headers.cpp` directly (no GL context),
-  so solver tests run headless. Add new solver sources to its `premake5.lua` `files` list.
+- `OpenGL-Tests/` - googletest project. Compiles the solver sources directly (no GL context), so solver tests run
+  headless. Add new solver sources to its `premake5.lua` `files` list. `src/eigen_test_config.h` is force-included in
+  every test source: it defines `EIGEN_RUNTIME_NO_MALLOC` and an `eigen_assert` that only fires while
+  `pd_test::g_eigen_asserts` is set (used by `StepDoesNotAllocate`). Benchmarks are `DISABLED_` tests in
+  `benchmark_test.cpp`; run them with `--gtest_also_run_disabled_tests --gtest_filter=*Benchmark*`.
 - `OpenGL-Examples/` - unrelated framework examples.
 
 ## Build and run (Windows, VS2019 toolset)
@@ -129,12 +136,26 @@ Work through phases in order. Each phase should leave the app building, running 
   the insertion are strongly stretched. Default 12 cells (1152 tets) costs ~21 ms/step serial, ~8 ms with OpenMP;
   the per-tet SVDs dominate (Phase 5).
 
-### Phase 5: Performance
-- [ ] Flatten constraints into per-type arrays; fold constant RHS terms into `b0`; no per-step allocations.
-- [ ] Chebyshev acceleration (Wang 2015); evaluate Anderson acceleration (Peng et al. 2018).
-- [ ] Evaluate the OpenMP toggle from Phase 3 at scale. Compare error versus wall-clock time, not versus iteration count.
+### Phase 5: Performance (done, except the optional GPU backend)
+- [x] Flatten constraints into per-type arrays; fold constant RHS terms into `b0`; no per-step allocations
+      (test: `StepDoesNotAllocate`). Strain + volume pairs on one tet share their SVD.
+- [x] Chebyshev acceleration (Wang 2015) and Anderson acceleration (Peng et al. 2018), both safeguarded so the
+      accepted energy never rises; the last iteration of a step is always plain.
+- [x] Evaluate the OpenMP toggle at scale and error versus wall-clock time (`ConvergenceVsTime` benchmark).
 - [ ] Optional GPU backend behind the same toggle: local step and a Jacobi/Chebyshev global solve both on the GPU
       (moving only the local step would be dominated by per-iteration transfers). Needs the flattened arrays above.
+- Notes (Release, 20 threads; this machine's timings vary by about 10%):
+  - ms/step serial / OpenMP, Phase 4 -> Phase 5: cantilever 1920 tets 38.5 / 11.4 -> 20.0 / 7.3; 15360 tets
+    373 / 110 -> 172 / 75; muscle 1152 tets 25.5 / 6.4 -> 12.9 / 4.7. At 15360 tets with OpenMP the serial global
+    solve (~35 ms) is half the step; it also gets ~20% slower while OpenMP threads spin after the local step.
+  - 3x3 SVD alternatives measured on simulation data (~600 ns each): Eigen JacobiSVD, a one-sided cyclic Jacobi on
+    F^T F (warm-started or not: near rest V is ill-conditioned, so warm starts barely help) and Eigen's closed-form
+    `computeDirect` (fast but only ~sqrt(eps) accurate near repeated singular values). Kept JacobiSVD; the win
+    came from flattening and sharing the SVD between paired constraints.
+  - Accelerations cost no measurable time per iteration. Anderson (m = 5) reaches with 10 iterations the error
+    plain PD has after 40 (muscle) or well beyond 40 (cantilever), so the app defaults to it; the solver default
+    stays plain. Chebyshev with rho = 0.9 never triggers the safeguard and gives 2-3x lower error; larger rho
+    overshoots and gets rejected.
 
 ### Phase 6: Contact
 - [ ] Ground plane and bone collisions as fixed-weight slots or post-projection (no refactor).

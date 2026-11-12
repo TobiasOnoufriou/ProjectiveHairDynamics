@@ -68,6 +68,10 @@ void SandboxLayer::OnAttach()
   plane_ = std::move(model_loader_->LoadModel("src/assets/Plane.obj"));
   m_sim = std::make_unique<PDSolver>();
   m_sim->m_track_energy = true;
+  // Anderson needs ~4x fewer iterations than plain PD for the same error on the
+  // tet scenes at no measurable per-iteration cost (see the ConvergenceVsTime
+  // benchmark), so the app starts with it; the solver default stays plain.
+  m_sim->m_acceleration = PDAcceleration::kAnderson;
   m_strand_renderer = std::make_unique<StrandRenderer>();
   m_surface_renderer = std::make_unique<SurfaceRenderer>();
   LoadScene(0);
@@ -266,6 +270,20 @@ void SandboxLayer::DrawSimulationTab() {
   }
 
   ImGui::SliderInt("Iterations", &m_sim->m_iterations_per_step, 1, 50);
+  // Iterate extrapolation (RHS-side only, the system matrix is unchanged).
+  static const char* kAccelerations[] = {"None", "Chebyshev (Wang 2015)", "Anderson (Peng et al. 2018)"};
+  int acceleration = static_cast<int>(m_sim->m_acceleration);
+  if (ImGui::Combo("Acceleration", &acceleration, kAccelerations, IM_ARRAYSIZE(kAccelerations))) {
+    m_sim->m_acceleration = static_cast<PDAcceleration>(acceleration);
+  }
+  if (m_sim->m_acceleration == PDAcceleration::kChebyshev) {
+    float rho = static_cast<float>(m_sim->m_chebyshev_rho);
+    if (ImGui::SliderFloat("Spectral radius rho", &rho, 0.5f, 0.9999f, "%.4f")) m_sim->m_chebyshev_rho = rho;
+    float gamma = static_cast<float>(m_sim->m_chebyshev_gamma);
+    if (ImGui::SliderFloat("Under-relaxation gamma", &gamma, 0.3f, 1.0f)) m_sim->m_chebyshev_gamma = gamma;
+  } else if (m_sim->m_acceleration == PDAcceleration::kAnderson) {
+    ImGui::SliderInt("Anderson window", &m_sim->m_anderson_window, 1, PDSolver::kMaxAndersonWindow);
+  }
   float damping = static_cast<float>(m_sim->m_damping_coefficient);
   if (ImGui::SliderFloat("Damping", &damping, 0.0f, 0.2f)) m_sim->m_damping_coefficient = damping;
   float gravity = static_cast<float>(m_sim->m_gravity_constant);
@@ -320,7 +338,11 @@ void SandboxLayer::DrawMetricsTab() {
   ImGui::Text("Vertices: %u (%u fixed)   Constraints: %zu", m_sim->NumVertices(), m_sim->NumFixed(),
               m_sim->NumConstraints());
   ImGui::Text("Step: %.3f ms (avg %.3f ms)", stats.step_ms, m_avg_step_ms);
+  ImGui::Text("  local %.3f ms, global %.3f ms", stats.local_ms, stats.global_ms);
   ImGui::Text("Max strain: %.3e   Max volume error: %.3e", stats.max_strain, stats.max_volume_error);
+  if (m_sim->m_acceleration != PDAcceleration::kNone) {
+    ImGui::Text("Rejected accelerated iterates: %d", stats.rejected_iterations);
+  }
 
   // Race-free local step: every constraint projects into its own slot, so the
   // OpenMP loop gives the same result as the serial one. Compare the ms/step.

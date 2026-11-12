@@ -36,12 +36,16 @@ project "OpenGL-Tests"
 
   includedirs
   {
+    "src",
     "vendor/googletest/include",
     "vendor/googletest",
     "../OpenGL-Sandbox/src",
     "../OpenGL-Core/vendor",
     "../OpenGL-Core/%{IncludeDir.glm}"
   }
+
+  -- Eigen's runtime no-malloc check, switchable per test (see the header).
+  forceincludes { "eigen_test_config.h" }
 
   -- Only our own OpenMP loops (PDSolver::m_parallel_local_step) may use
   -- threads, so serial-vs-parallel timings are not muddied by Eigen's own.

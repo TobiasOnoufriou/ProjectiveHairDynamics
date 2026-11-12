@@ -30,9 +30,8 @@ void TetConstraint::AddG(int first_row, std::vector<SparseMatrixTriplet>* triple
   }
 }
 
-void TetConstraint::SignedSVD(const EigenMatrix3& f, EigenMatrix3* u, EigenVector3* s,
-                              EigenMatrix3* v) {
-  Eigen::JacobiSVD<EigenMatrix3> svd(f, Eigen::ComputeFullU | Eigen::ComputeFullV);
+void TetConstraint::SignedSVD(const EigenMatrix3& f, EigenMatrix3* u, EigenVector3* s, EigenMatrix3* v) {
+  Eigen::JacobiSVD<EigenMatrix3, Eigen::NoQRPreconditioner> svd(f, Eigen::ComputeFullU | Eigen::ComputeFullV);
   *u = svd.matrixU();
   *v = svd.matrixV();
   *s = svd.singularValues();  // Descending, so s(2) is the smallest.
@@ -47,50 +46,67 @@ void TetConstraint::SignedSVD(const EigenMatrix3& f, EigenMatrix3* u, EigenVecto
   }
 }
 
-ScalarType TetConstraint::Strain(const ConstRows& gx) const {
-  Eigen::JacobiSVD<EigenMatrix3> svd(DeformationGradient(gx));
+EigenVector3 TetConstraint::SignedSingularValues(const EigenMatrix3& f) {
+  Eigen::JacobiSVD<EigenMatrix3, Eigen::NoQRPreconditioner> svd(f);  // Values only.
   EigenVector3 s = svd.singularValues();
-  if (DeformationGradient(gx).determinant() < 0.0) s(2) = -s(2);
-  return (s.array() - 1.0).abs().maxCoeff();
+  if (f.determinant() < 0.0) s(2) = -s(2);
+  return s;
 }
+
+ScalarType TetConstraint::Strain(const ConstRows& gx) const { return StrainOfF(DeformationGradient(gx)); }
 
 ScalarType TetConstraint::VolumeError(const ConstRows& gx) const {
-  return std::abs(DeformationGradient(gx).determinant() - 1.0);
+  return VolumeErrorOfF(DeformationGradient(gx));
 }
 
-void TetStrainConstraint::Project(const ConstRows& gx, Rows p) const {
-  EigenMatrix3 u, v;
-  EigenVector3 s;
-  SignedSVD(DeformationGradient(gx), &u, &s, &v);
+EigenVector3 TetConstraint::ClampStretch(const EigenVector3& s, ScalarType min_stretch, ScalarType max_stretch) {
   // Clamping each singular value independently is the closest point in
   // Frobenius norm, since the admissible set is a box in singular-value space.
-  for (int k = 0; k < 3; ++k) s(k) = std::min(std::max(s(k), *m_min), *m_max);
-  p = (u * s.asDiagonal() * v.transpose()).transpose();
+  return s.cwiseMax(min_stretch).cwiseMin(max_stretch);
 }
 
-void TetVolumeConstraint::Project(const ConstRows& gx, Rows p) const {
-  EigenMatrix3 u, v;
-  EigenVector3 s0;
-  SignedSVD(DeformationGradient(gx), &u, &s0, &v);
-
+EigenVector3 TetConstraint::ProjectVolumeSingularValues(const EigenVector3& s0, ScalarType min_volume,
+                                                        ScalarType max_volume) {
   // Gauss-Newton on min ||d||^2 s.t. c(s0 + d) = det - v_target = 0: linearise
-  // c at the current s = s0 + d_old (gradient f = (s1 s2, s0 s2, s0 s1)) and take
-  // the minimum-norm d solving c(s) + f . (d - d_old) = 0.
+  // c at the current s = s0 + d_old (gradient g = (s1 s2, s0 s2, s0 s1)) and take
+  // the minimum-norm d solving c(s) + g . (d - d_old) = 0.
   EigenVector3 s = s0;
   EigenVector3 d = EigenVector3::Zero();
   // Converges quadratically near the solution; far-off starts (e.g. inverted
   // tets) need more iterations, but the loop usually exits after 2-4.
   for (int it = 0; it < 30; ++it) {
     const ScalarType det = s(0) * s(1) * s(2);
-    const ScalarType target = std::min(std::max(det, *m_min), *m_max);
+    const ScalarType target = std::min(std::max(det, min_volume), max_volume);
     if (std::abs(det - target) < 1e-12) break;
-    const EigenVector3 f(s(1) * s(2), s(0) * s(2), s(0) * s(1));
-    const ScalarType f2 = f.squaredNorm();
-    if (f2 < 1e-24) break;  // Collapsed to a line or point: no usable gradient.
-    d = -((det - target) - f.dot(d)) / f2 * f;
+    const EigenVector3 grad(s(1) * s(2), s(0) * s(2), s(0) * s(1));
+    const ScalarType g2 = grad.squaredNorm();
+    if (g2 < 1e-24) break;  // Collapsed to a line or point: no usable gradient.
+    d = -((det - target) - grad.dot(d)) / g2 * grad;
     s = s0 + d;
   }
-  p = (u * s.asDiagonal() * v.transpose()).transpose();
+  return s;
+}
+
+EigenMatrix3 TetConstraint::ProjectStrainF(const EigenMatrix3& f, ScalarType min_stretch, ScalarType max_stretch) {
+  EigenMatrix3 u, v;
+  EigenVector3 s;
+  SignedSVD(f, &u, &s, &v);
+  return u * ClampStretch(s, min_stretch, max_stretch).asDiagonal() * v.transpose();
+}
+
+EigenMatrix3 TetConstraint::ProjectVolumeF(const EigenMatrix3& f, ScalarType min_volume, ScalarType max_volume) {
+  EigenMatrix3 u, v;
+  EigenVector3 s;
+  SignedSVD(f, &u, &s, &v);
+  return u * ProjectVolumeSingularValues(s, min_volume, max_volume).asDiagonal() * v.transpose();
+}
+
+void TetStrainConstraint::Project(const ConstRows& gx, Rows p) const {
+  p = ProjectStrainF(DeformationGradient(gx), *m_min, *m_max).transpose();
+}
+
+void TetVolumeConstraint::Project(const ConstRows& gx, Rows p) const {
+  p = ProjectVolumeF(DeformationGradient(gx), *m_min, *m_max).transpose();
 }
 
 TetFibreConstraint::TetFibreConstraint(const ScalarType* stiffness, const std::array<unsigned int, 4>& tet,
@@ -109,23 +125,18 @@ void TetFibreConstraint::AddG(int first_row, std::vector<SparseMatrixTriplet>* t
   for (int c = 0; c < 4; ++c) triplets->emplace_back(first_row, m_tet[c], m_g(0, c));
 }
 
-ScalarType TetFibreConstraint::TargetStretch() const {
-  const ScalarType a = std::min(std::max(*m_activation, 0.0), 1.0);
-  return 1.0 - a * *m_max_contraction;
+EigenVector3 TetFibreConstraint::ProjectFibre(const EigenVector3& fa, const EigenVector3& fibre,
+                                              ScalarType target) {
+  const ScalarType len = fa.norm();
+  // Fibre collapsed to a point: every direction is equally close.
+  if (len < 1e-12) return target * fibre;
+  return (target / len) * fa;
 }
 
 void TetFibreConstraint::Project(const ConstRows& gx, Rows p) const {
-  const ScalarType target = TargetStretch();
-  const ScalarType len = gx.row(0).norm();
-  if (len < 1e-12) {
-    // Fibre collapsed to a point: every direction is equally close.
-    p.row(0) = target * m_fibre.transpose();
-  } else {
-    p.row(0) = (target / len) * gx.row(0);
-  }
+  p.row(0) = ProjectFibre(gx.row(0).transpose(), m_fibre, TargetStretch()).transpose();
 }
 
 ScalarType TetFibreConstraint::Strain(const ConstRows& gx) const {
-  const ScalarType target = TargetStretch();
-  return std::abs(gx.row(0).norm() - target) / std::max(target, 1e-12);
+  return FibreStrain(gx.row(0).transpose(), TargetStretch());
 }
