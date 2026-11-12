@@ -21,6 +21,10 @@ project "OpenGL-Tests"
     "../OpenGL-Sandbox/src/Scene.h",
     "../OpenGL-Sandbox/src/HairScene.h",
     "../OpenGL-Sandbox/src/HairScene.cpp",
+    "../OpenGL-Sandbox/src/TetMesh.h",
+    "../OpenGL-Sandbox/src/TetMesh.cpp",
+    "../OpenGL-Sandbox/src/TetScene.h",
+    "../OpenGL-Sandbox/src/TetScene.cpp",
     "../OpenGL-Sandbox/src/Constraint.h",
     "../OpenGL-Sandbox/src/math_headers.h",
     "../OpenGL-Sandbox/src/math_headers.cpp"

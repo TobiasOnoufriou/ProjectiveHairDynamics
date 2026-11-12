@@ -20,6 +20,10 @@ The hair solver must keep working as a regression scene while the muscle work la
     per-step stats (ms/step, energy per iteration, max strain).
   - `Constraint.h` - PD constraints (`AttachmentConstraint` for soft drag, `SpringConstraint`). Each adds `w*G^T G` to the
     LHS, `w*G^T p` to the RHS, and returns its energy `w/2 ||Gx - p||^2` from `AddToRHS`.
+  - `TetMesh.*` - tet mesh data (positive-orientation convention), procedural Kuhn-subdivided beam, TetGen
+    `.node/.ele` load/save, boundary triangles, edges, lumped masses, vertex normals. No GL, tested headless.
+  - `TetScene.*` - clamped tet beam (edge springs until Phase 3 replaces them with strain constraints).
+  - `SurfaceRenderer.*` - lit triangle surface (`Scene::SurfaceIndices`), normals recomputed per upload.
   - `Scene.h`, `HairScene.*` - scene builders that fill a `PDSolver` and expose tunable `SceneParam`s (no ImGui, so
     they are testable headless). New scenes are registered in `kScenes` in `SandboxLayer.cpp`.
   - `SandboxLayer.*` - scene selection, mouse picking/dragging, ImGui panels (Simulation, Metrics, Camera).
@@ -89,10 +93,11 @@ Work through phases in order. Each phase should leave the app building, running 
 - [x] ImGui metrics: ms/step, total PD energy per iteration, max strain/volume error.
 - [x] Unit tests: rest state has zero energy; energy never increases across local/global iterations.
 
-### Phase 2: Tetrahedral meshes
-- [ ] Procedural tet beam (box split into tets). No external dependency, used for tests.
-- [ ] Loader for TetGen `.node/.ele` (or Medit `.mesh`) produced offline from a surface mesh.
-- [ ] Extract boundary triangles and render the surface with normals. Optionally embed a high-res render mesh with barycentric weights.
+### Phase 2: Tetrahedral meshes (done)
+- [x] Procedural tet beam (box split into tets). No external dependency, used for tests.
+- [x] Loader for TetGen `.node/.ele` produced offline from a surface mesh (Medit `.mesh` not supported yet).
+- [x] Extract boundary triangles and render the surface with normals.
+- [ ] Optional: embed a high-res render mesh with barycentric weights.
 
 ### Phase 3: Volumetric constraints
 - [ ] Corotational strain constraint: F = Ds * Dm^-1, project to nearest rotation (SVD, fix reflections),

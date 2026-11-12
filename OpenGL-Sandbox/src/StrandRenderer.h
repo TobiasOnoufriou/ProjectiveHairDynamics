@@ -18,6 +18,7 @@ class StrandRenderer {
  private:
   GLuint vao_ = 0, vbo_ = 0, ebo_ = 0;
   GLsizei index_count_ = 0;
+  std::vector<unsigned int> indices_;  // Last uploaded, to skip re-uploading the EBO.
   std::vector<float> vertex_data_;
   GLCore::Utils::Shader* shader_;
 };

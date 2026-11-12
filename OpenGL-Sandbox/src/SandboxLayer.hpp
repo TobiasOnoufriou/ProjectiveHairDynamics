@@ -8,6 +8,7 @@
 #include "PDSolver.h"
 #include "Scene.h"
 #include "StrandRenderer.h"
+#include "SurfaceRenderer.h"
 
 
 class SandboxLayer : public GLCore::Layer
@@ -50,6 +51,7 @@ private:
   double m_avg_step_ms = 0.0;
   std::vector<float> m_energy_plot;
   std::unique_ptr<StrandRenderer> m_strand_renderer;
+  std::unique_ptr<SurfaceRenderer> m_surface_renderer;
   bool m_run_sim = true;
 
   const aiScene* kScene; // Current Scene.

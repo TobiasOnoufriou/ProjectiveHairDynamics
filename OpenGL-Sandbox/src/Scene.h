@@ -31,5 +31,11 @@ class Scene {
   virtual void Build(PDSolver* solver) = 0;
   // Pairs of vertex indices drawn as line segments.
   virtual const std::vector<unsigned int>& LineIndices() const = 0;
+  // Boundary surface as index triples, counter-clockwise seen from outside, drawn
+  // as a lit surface. Empty for line-only scenes such as hair.
+  virtual const std::vector<unsigned int>& SurfaceIndices() const {
+    static const std::vector<unsigned int> kNone;
+    return kNone;
+  }
   virtual std::vector<SceneParam> Params() { return {}; }
 };

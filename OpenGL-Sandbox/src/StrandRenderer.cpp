@@ -35,7 +35,8 @@ void StrandRenderer::Upload(const EigenMatrix3x& positions, const std::vector<un
   glBindVertexArray(vao_);
   glBindBuffer(GL_ARRAY_BUFFER, vbo_);
   glBufferData(GL_ARRAY_BUFFER, vertex_data_.size() * sizeof(float), vertex_data_.data(), GL_DYNAMIC_DRAW);
-  if (index_count_ != static_cast<GLsizei>(indices.size())) {
+  if (indices != indices_) {
+    indices_ = indices;
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
     index_count_ = static_cast<GLsizei>(indices.size());
   }

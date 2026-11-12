@@ -4,6 +4,7 @@
 #include "GLCore/Core/Input.h"
 #include "GLCore/Core/MouseButtonCodes.h"
 #include "HairScene.h"
+#include "TetScene.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -22,6 +23,7 @@ struct SceneEntry {
 };
 const SceneEntry kScenes[] = {
   {"Hair", []() -> std::unique_ptr<Scene> { return std::make_unique<HairScene>(); }},
+  {"Tet beam", []() -> std::unique_ptr<Scene> { return std::make_unique<TetScene>(); }},
 };
 constexpr int kNumScenes = static_cast<int>(sizeof(kScenes) / sizeof(kScenes[0]));
 
@@ -65,6 +67,7 @@ void SandboxLayer::OnAttach()
   m_sim = std::make_unique<PDSolver>();
   m_sim->m_track_energy = true;
   m_strand_renderer = std::make_unique<StrandRenderer>();
+  m_surface_renderer = std::make_unique<SurfaceRenderer>();
   LoadScene(0);
 
   this->kScene = model_loader_->getScene();
@@ -86,6 +89,7 @@ void SandboxLayer::LoadScene(int index)
 void SandboxLayer::UploadStrands()
 {
   m_strand_renderer->Upload(m_sim->GetPositions(), m_scene->LineIndices());
+  m_surface_renderer->Upload(m_sim->GetPositions(), m_scene->SurfaceIndices());
 }
 
 void SandboxLayer::OnDetach()
@@ -192,6 +196,7 @@ void SandboxLayer::OnUpdate(Timestep ts)
   }
   // Exponential moving average so the ms/step readout is legible.
   m_avg_step_ms += 0.05 * (m_sim->GetStats().step_ms - m_avg_step_ms);
+  m_surface_renderer->Draw(camera_controller_);
   m_strand_renderer->Draw(camera_controller_);
 }
 
@@ -278,6 +283,11 @@ void SandboxLayer::DrawSimulationTab() {
     // Rebuilding the scene resets the pose, so wait until the slider is released.
     if (p.effect == SceneParam::kRebuildScene && ImGui::IsItemDeactivatedAfterEdit()) rebuild_scene = true;
   }
+  if (auto* tet = dynamic_cast<TetScene*>(m_scene.get())) {
+    if (ImGui::Checkbox("Show tet edges", &tet->m_show_wireframe)) UploadStrands();
+    ImGui::Text("%zu tets, %zu surface triangles, volume %.4f m^3", tet->Mesh().NumTets(),
+                tet->SurfaceIndices().size() / 3, tet->Mesh().TotalVolume());
+  }
   if (rebuild_scene) {
     m_sim->EndDrag();
     m_scene->Build(m_sim.get());
@@ -285,7 +295,7 @@ void SandboxLayer::DrawSimulationTab() {
   } else if (rebuild_matrix) {
     m_sim->RebuildSystemMatrix();
   }
-  ImGui::Text(m_sim->IsDragging() ? "Dragging vertex %d" : "Left-click a strand to drag it", m_sim->DraggedVertex());
+  ImGui::Text(m_sim->IsDragging() ? "Dragging vertex %d" : "Left-click a vertex to drag it", m_sim->DraggedVertex());
 }
 
 void SandboxLayer::DrawMetricsTab() {
