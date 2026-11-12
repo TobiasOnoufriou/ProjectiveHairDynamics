@@ -1,10 +1,15 @@
 name: cpplint
+
 on: [push, pull_request]
+
 jobs:
   cpplint:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v2
-    - uses: actions/setup-python@v2
-    - run: pip install cpplint
-    - run: cpplint --recursive .
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install cpplint
+      # Lint only our own sources, never vendored libraries.
+      - run: cpplint --recursive --extensions=h,hpp,cpp OpenGL-Sandbox/src OpenGL-Tests/src

@@ -1,3 +1,6 @@
+-- Unit tests for the simulation code. The solver only depends on Eigen and glm,
+-- so its sources are compiled straight into this executable: no OpenGL context,
+-- window or assimp is needed and the tests can run headless in CI.
 project "OpenGL-Tests"
   kind "ConsoleApp"
   language "C++"
@@ -11,58 +14,31 @@ project "OpenGL-Tests"
   {
     "src/**.h",
     "src/**.cpp",
-    "vendor/googletest/include/gtest/**.h",
-    "vendor/googletest/include/gtest/**.hpp",
-    "vendor/googletest/src/gtest-all.cc"
-  }
-
-  files
-  {-- Dependencies
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/contrib/unzip/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/contrib/irrXML/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/contrib/zlib/*',
-		-- Common
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/Common/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/PostProcessing/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/Material/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/CApi/**',
-		-- Importers
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/Collada/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/Obj/**',
-		-- 'assimp/code/Blender/**', 'assimp/contrib/poly2tri/poly2tri/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/FBX/**',
-		-- 'assimp/code/glTF2/**',
-		-- 'assimp/code/glTF/**',
-		'../OpenGL-Core/${IncludeDir.assimp}/assimp/code/Assbin/**' 
+    "vendor/googletest/src/gtest-all.cc",
+    -- Simulation code under test.
+    "../OpenGL-Sandbox/src/Simulation.h",
+    "../OpenGL-Sandbox/src/Simulation.cpp",
+    "../OpenGL-Sandbox/src/Constraint.h",
+    "../OpenGL-Sandbox/src/math_headers.h",
+    "../OpenGL-Sandbox/src/math_headers.cpp"
   }
 
   includedirs
   {
-    "mylib",
     "vendor/googletest/include",
-    "vendor/googletest/",
+    "vendor/googletest",
     "../OpenGL-Sandbox/src",
-    "../OpenGL-Core/vendor/spdlog/include",
-		"../OpenGL-Core/src",
-		"../OpenGL-Core/vendor",
-    "../OpenGL-Core/%{IncludeDir.GLFW}",
-		"../OpenGL-Core/%{IncludeDir.Glad}",
-		"../OpenGL-Core/%{IncludeDir.ImGui}",
-		"../OpenGL-Core/%{IncludeDir.glm}",
-		"../OpenGL-Core/%{IncludeDir.stb_image}",
-		"../OpenGL-Core/%{IncludeDir.assimp}/include",
-		"../OpenGL-Core/%{IncludeDir.assimp}/contrib/irrXML",
-		"../OpenGL-Core/%{IncludeDir.assimp}/contrib/zlib",
-		"../OpenGL-Core/%{IncludeDir.assimp}/contrib/rapidjson/include"
+    "../OpenGL-Core/vendor",
+    "../OpenGL-Core/%{IncludeDir.glm}"
   }
 
-  links
-  {
-    "OpenGL-Sandbox",
-    "OpenGL-Core"
-  }
+  filter "system:windows"
+    systemversion "latest"
 
   filter "configurations:Debug"
-    defines "GLCORE_DEBUG"
     runtime "Debug"
     symbols "on"
+
+  filter "configurations:Release"
+    runtime "Release"
+    optimize "on"

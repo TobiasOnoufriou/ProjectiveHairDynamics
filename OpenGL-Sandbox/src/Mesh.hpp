@@ -5,17 +5,15 @@
 #include <GLCoreUtils.h>
 
 
-#include "hittable.h"
+#include "Hittable.h"
 #include "BoxCollider.h"
 
 #include <glm/gtc/type_ptr.hpp>
 
 #include <string>
 #include <vector>
-#include <math.h>
+#include <cmath>
 
-#define minI(x, y) ((x) < (y) ? (x) : (y))
-#define maxI(x, y) ((x) > (y) ? (x) : (y))
 
 struct Vertex {
   glm::vec3 position;
@@ -31,11 +29,6 @@ struct Texture {
   std::string path;
 };
 
-struct Edge {
-  unsigned int m_v1, m_v2; // indices of endpoint vertices
-  unsigned int m_tri1, m_tri2; // indices of adjacent faces
-};
-
 // Mesh would inherit a collider and material
 
 class Mesh: public BoxCollider {
@@ -47,51 +40,37 @@ public:
   );
   ~Mesh();
 
-  void Draw(GLCore::Utils::PerspectiveCameraController camera);
+  void Draw(const GLCore::Utils::PerspectiveCameraController& camera);
   void ChangeVertexPosition(glm::vec3 pos, int index);
-  void GenerateParticleList(unsigned int system_dimension, unsigned int vertex);
-  void GenerateEdgeList();
+  // Ray vs axis-aligned bounding box (slab test). A zero direction component
+  // gives +-inf slab distances, which fmin/fmax handle correctly.
   bool intersectionTest(glm::vec3 origin, glm::vec3 dir) {
-    float tmin = 0.0, tmax = INFINITY;
-    
-    for (int i = 0; i < 3; ++i) {
-      float t1 = (pMin[i],- origin[i]) * (dir[i]);
-      float t2 = (pMax[i] - origin[i]) * (dir[i]);
+    float tmin = 0.0f, tmax = INFINITY;
 
-      tmin = maxI(tmin, minI(t1, t2));
-      tmax = minI(tmax, maxI(t1, t2));
+    for (int i = 0; i < 3; ++i) {
+      const float inv_dir = 1.0f / dir[i];
+      const float t1 = (pMin[i] - origin[i]) * inv_dir;
+      const float t2 = (pMax[i] - origin[i]) * inv_dir;
+
+      tmin = std::fmax(tmin, std::fmin(t1, t2));
+      tmax = std::fmin(tmax, std::fmax(t1, t2));
     }
 
-    return tmin < tmax;
-
+    return tmin <= tmax;
   }
   void TranslateShape(glm::vec3 translation);
   void SetupMesh();
   void ComputeNormal();
   virtual void CalculateBoundingVolume() override;
-  virtual void DrawBoundingBox(GLCore::Utils::PerspectiveCameraController cam) override;
+  virtual void DrawBoundingBox(const GLCore::Utils::PerspectiveCameraController& cam) override;
 
 
   bool GetCollider() { return collider; }
-
-  unsigned int m_system_dimension;
-
 
  public:
   std::vector<Vertex> vertices_;
   std::vector<GLuint> indices_;
   std::vector<Texture> textures_;
-
-  VectorX m_current_positions;
-  VectorX m_current_velocities;
-  SparseMatrix m_mass_matrix;
-  SparseMatrix inv_mass_matrix_;
-  SparseMatrix identity_matrix_;
-
-  SparseMatrix mass_matrix_1d_;
-  SparseMatrix identity_matrix_1d_;
-
-  std::vector<Edge> m_edge_list;
 
   //Scale and Position
   glm::vec3 Scale_, Position_;

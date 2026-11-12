@@ -42,7 +42,7 @@ void StrandRenderer::Upload(const EigenMatrix3x& positions, const std::vector<un
   glBindVertexArray(0);
 }
 
-void StrandRenderer::Draw(GLCore::Utils::PerspectiveCameraController& camera) {
+void StrandRenderer::Draw(const GLCore::Utils::PerspectiveCameraController& camera) {
   if (index_count_ == 0) return;
   glUseProgram(shader_->GetRendererID());
 

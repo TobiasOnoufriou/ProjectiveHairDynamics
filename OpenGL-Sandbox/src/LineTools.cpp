@@ -45,7 +45,7 @@ LineTools::~LineTools() {
 
 
 
-void LineTools::DrawDebugLine(GLCore::Utils::PerspectiveCameraController camera) {
+void LineTools::DrawDebugLine(const GLCore::Utils::PerspectiveCameraController& camera) {
   glUseProgram(shader_->GetRendererID());
 
   glGenVertexArrays(1, &vao_);

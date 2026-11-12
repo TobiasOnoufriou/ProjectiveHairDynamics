@@ -74,7 +74,6 @@ void ModelLoader::ProcessMesh(aiMesh* mesh, const aiScene* kScene) {
   std::vector<unsigned int> indices;
   std::vector<Texture> textures;
 
-  unsigned int system_dimensions_ = mesh->mNumVertices * 3;
 
   for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
     Vertex vertex;
@@ -139,7 +138,6 @@ void ModelLoader::ProcessMesh(aiMesh* mesh, const aiScene* kScene) {
   textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
 
   meshes_ = std::make_unique<Mesh>(vertices, indices, textures);
-  meshes_->GenerateParticleList(system_dimensions_, mesh->mNumVertices);
 }
 
 template<typename Vec>

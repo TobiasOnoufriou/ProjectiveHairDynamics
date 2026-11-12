@@ -1,19 +1,37 @@
 name: Build and Test
 
 on: [push, pull_request]
+
 jobs:
-  run-msbuild-vstest:
+  unit-tests:
     runs-on: windows-latest
-    name: Run MSBuild and VSTest
-  
+    name: Build and run unit tests
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2.1.0
-        id: checkout_code
+        uses: actions/checkout@v4
 
-      - name: Setup MSBuild and add to PATH
-        uses: microsoft/setup-msbuild@v1.1
-        id: setup_msbuild
-      
-      - name: Build app for release
-        run: msbuild src\YourProjectFile.csproj -t:rebuild -verbosity:diag -property:Configuration=Release
+      # Only the submodules the test project and premake scripts need
+      # (assimp and spdlog are skipped to keep the checkout fast).
+      - name: Checkout submodules
+        run: >
+          git submodule update --init --depth 1
+          OpenGL-Core/vendor/glfw
+          OpenGL-Core/vendor/imgui
+          OpenGL-Core/vendor/glm
+          OpenGL-Core/vendor/eigen
+          OpenGL-Tests/vendor
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Generate project files
+        run: vendor\bin\premake\premake5.exe vs2019
+
+      # premake alpha14 only knows vs2019 (v142); the runner has VS2022, so
+      # override the toolset.
+      - name: Build tests
+        run: msbuild OpenGL-Sandbox.sln -t:OpenGL-Tests -p:Configuration=Release -p:Platform=x64 -p:PlatformToolset=v143 -m -verbosity:minimal
+
+      - name: Run tests
+        run: bin\Release-windows-x86_64\OpenGL-Tests\OpenGL-Tests.exe

@@ -15,7 +15,7 @@ public:
 
   }
 
-  virtual void DrawBoundingBox(GLCore::Utils::PerspectiveCameraController cam) = 0;
+  virtual void DrawBoundingBox(const GLCore::Utils::PerspectiveCameraController& cam) = 0;
 
   virtual void CalculateBoundingVolume() = 0;
   

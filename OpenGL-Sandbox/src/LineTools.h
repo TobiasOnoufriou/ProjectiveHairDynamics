@@ -8,7 +8,7 @@ public:
   LineTools(glm::vec3 cam_pos);
   ~LineTools();
   void InitLine(glm::vec3 min_vec,glm::vec3 max_vec, glm::mat4 model);
-  void DrawDebugLine(GLCore::Utils::PerspectiveCameraController camera);
+  void DrawDebugLine(const GLCore::Utils::PerspectiveCameraController& camera);
 private:
   GLuint vbo_, vao_;
   glm::mat4 model_;

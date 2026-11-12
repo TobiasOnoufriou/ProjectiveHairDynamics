@@ -13,7 +13,7 @@ class StrandRenderer {
 
   // positions: N x 3 particle positions, indices: pairs of particle indices.
   void Upload(const EigenMatrix3x& positions, const std::vector<unsigned int>& indices);
-  void Draw(GLCore::Utils::PerspectiveCameraController& camera);
+  void Draw(const GLCore::Utils::PerspectiveCameraController& camera);
 
  private:
   GLuint vao_ = 0, vbo_ = 0, ebo_ = 0;
