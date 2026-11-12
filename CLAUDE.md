@@ -14,7 +14,12 @@ The hair solver must keep working as a regression scene while the muscle work la
 
 - `OpenGL-Core/` - engine framework (window, layers, events, ImGui, camera, shaders). Rarely changed.
   Vendored deps live in `OpenGL-Core/vendor/` (GLFW, Glad, imgui, glm, eigen, assimp, spdlog). Do not edit vendor code.
-- `OpenGL-Sandbox/src/` - the actual project:
+- `PD-Core/` - GL-free static library with the simulation code (depends only on Eigen; no glm, GL, ImGui, assimp).
+  Linked by the sandbox and the tests (and later `pdbake`). Its headers are found by bare name (`"PDSolver.h"`).
+  `src/pd_eigen_config.h` is force-included in **every** project that links PD-Core (premake `forceincludes`; keep it
+  that way, mismatched Eigen config across library and user is an ODR violation): it defines `EIGEN_RUNTIME_NO_MALLOC`
+  and an `eigen_assert` that only fires while `pd::g_eigen_asserts` is set (default on in Debug, off in Release; used
+  by `StepDoesNotAllocate`). New core sources go in `PD-Core/src/` and are picked up by its glob. Contents:
   - `PDSolver.h/.cpp` - generic PD solver: per-vertex lumped masses, exact Dirichlet (fixed) vertices eliminated
     from the system, constraint list stacked into one sparse `J` (A = M/h^2 + J^T W J), prefactored `SimplicialLLT`
     of the free block, race-free local step (each constraint projects into its own rows of a projection buffer,
@@ -26,6 +31,11 @@ The hair solver must keep working as a regression scene while the muscle work la
     acceleration (`m_acceleration`). `Step()` makes no heap allocations once the buffers are sized.
     Contact: kinematic `Collider`s (`AddCollider`, posed via `GetCollider`, RHS only) and fixed-weight contact slots
     (`SetContactVertices`, `SetContactStiffness`), plus a post-step Coulomb friction / inelastic normal velocity pass.
+  - `PDAsset.*` - the baked asset `.pdasset` (namespace `pd`): `Asset` = bones (glTF node names + bind-pose world
+    transform), muscles (`TetMesh` + materials, per-tet material, fibre coordinate, bone-local attachments), bone-local
+    colliders, render-mesh embeddings and skin bindings (tet + 4 barycentric weights). Versioned little-endian binary
+    of FourCC chunks (unknown chunks skipped, newer versions refused, float64 so round trips are exact);
+    `ValidateAsset` checks every index/size and is run by Save and Load. Tests: `asset_test.cpp`.
   - `Collider.*` - plane / sphere / capsule / box colliders: signed distance, closest-point projection out of a set of
     colliders, triangulation for drawing. No GL, tested headless.
   - `Constraint.h` - PD constraint interface plus `AttachmentConstraint` (soft drag) and `SpringConstraint`. A constraint
@@ -49,10 +59,10 @@ The hair solver must keep working as a regression scene while the muscle work la
   - `SandboxLayer.*` - scene selection, mouse picking/dragging, ImGui panels (Simulation, Metrics, Camera).
   - `StrandRenderer.*` - draws strands as GL lines. `Mesh.*`, `ModelLoader.*` - assimp model loading/rendering.
   - `math_headers.h` - Eigen typedefs (`ScalarType = double`, `EigenMatrix3x` = N x 3, row i = particle i).
-- `OpenGL-Tests/` - googletest project. Compiles the solver sources directly (no GL context), so solver tests run
-  headless. Add new solver sources to its `premake5.lua` `files` list. `src/eigen_test_config.h` is force-included in
-  every test source: it defines `EIGEN_RUNTIME_NO_MALLOC` and an `eigen_assert` that only fires while
-  `pd_test::g_eigen_asserts` is set (used by `StepDoesNotAllocate`). Benchmarks are `DISABLED_` tests in
+- `OpenGL-Sandbox/src/` - the app (links PD-Core and OpenGL-Core):
+- `OpenGL-Tests/` - googletest project. Links PD-Core and compiles the GL-free scene builders (`Scene.h`,
+  `HairScene`, `TetScene`, `MuscleScene`) from the sandbox directly, so everything runs headless. Add new GL-free
+  sandbox sources it needs to its `premake5.lua` `files` list. Benchmarks are `DISABLED_` tests in
   `benchmark_test.cpp`; run them with `--gtest_also_run_disabled_tests --gtest_filter=*Benchmark*`.
 - `OpenGL-Examples/` - unrelated framework examples.
 
@@ -73,7 +83,7 @@ knows `vs2019` (toolset `v142`). Only VS2022 is installed, so build with a tools
 bin/Release-windows-x86_64/OpenGL-Tests/OpenGL-Tests.exe
 ```
 
-Use `-t:OpenGL-Sandbox` for the app. The user's local `.vcxproj` files may contain manual tweaks (for example a
+Use `-t:OpenGL-Sandbox` for the app. Both build `PD-Core` first (project reference). The user's local `.vcxproj` files may contain manual tweaks (for example a
 `v143` retarget). Back them up before re-running premake. **Run the app with the working directory set to
 `OpenGL-Sandbox/`**, because assets and shaders are loaded by relative paths such as `src/shaders/...`.
 Use Release for any performance measurement; Eigen in Debug is 10-50x slower.
@@ -195,8 +205,13 @@ vertex groups on muscles: `pd_origin` / `pd_insertion` (attachment regions), `pd
 `pd_activation_group`. Bone meshes are rigidly parented to armature bones. Apply scale and modifiers before export.
 Everything is converted to one internal convention at import: meters, Y-up, right-handed (glTF's own).
 
-- [ ] 7.1 Core library split: solver, mesh, constraint and collider code into a GL-free `PD-Core` static library
+- [x] 7.1 Core library split: solver, mesh, constraint and collider code into a GL-free `PD-Core` static library
       linked by the sandbox, the tests and `pdbake`. Keep its public headers small (future SDK C API base).
+- Notes (7a): the glm <-> Eigen conversions moved to the sandbox (`GlmEigen.h`); scenes stay in the sandbox. New
+  asset code lives in namespace `pd`; the older core types (`PDSolver`, `TetMesh`, `Collider`) are still global.
+  The asset stores per-muscle meshes, so several muscles become one solver by concatenating vertex ranges at load.
+  Chunks in later steps fill fields that already exist (embedding 7.5, attachments 7.6, fibre coordinate 7.7,
+  materials 7.8, colliders 7.9, skin 7.11); a new field means a new chunk or a version bump.
 - [ ] 7.2 glTF import: meshes, armature, skin weights, animations, `extras`. Prefer cgltf (MIT, single header) over
       the vendored assimp unless assimp exposes `extras` cleanly.
 - [ ] 7.3 Validation: watertight, no self-intersection, no muscle-bone intersection at rest, scale sanity, degenerate
@@ -213,9 +228,10 @@ Everything is converted to one internal convention at import: meters, Y-up, righ
       (Choi and Blemker 2013; Saito et al. 2015). Test: matches the hand-built spindle fibres.
 - [ ] 7.8 Materials: tendon vs belly stiffness per tet from `pd_tendon`, else from the fibre-field coordinate.
 - [ ] 7.9 Colliders: fit a capsule per bone mesh (principal axis + radius), attached to its armature bone.
-- [ ] 7.10 `.pdasset`: versioned binary (header with version, units, axes; tets, rest positions, attachments, fibres,
-      materials, embedding, colliders, skin bindings), references glTF bones by name; round-trip test.
-      `pdbake input.glb -o out.pdasset [--resolution]` CLI with a report (tet count, pins per bone, warnings).
+- [x] 7.10 (format) `.pdasset`: versioned binary (header with version, units, axes; tets, rest positions, attachments,
+      fibres, materials, embedding, colliders, skin bindings), references glTF bones by name; round-trip test.
+- [ ] 7.10 (tool) `pdbake input.glb -o out.pdasset [--resolution]` CLI with a report (tet count, pins per bone,
+      warnings). A new premake project linking PD-Core, with `forceincludes { "pd_eigen_config.h" }`.
 - [ ] 7.11 Cheap skin corrective: bake each skin vertex to its nearest muscle-surface point plus a falloff; runtime
       skin = LBS position + falloff * (simulated muscle point - skinned rest muscle point). Test: a muscle at rest
       relative to its bones leaves the skin equal to LBS. (A simulated fat layer is out of scope; see stretch goals.)

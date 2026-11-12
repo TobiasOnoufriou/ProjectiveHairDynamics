@@ -21,6 +21,7 @@ project "OpenGL-Sandbox"
 
 	includedirs
 	{
+		"../PD-Core/src",
     "../OpenGL-Core/vendor/gltf",
 		"../OpenGL-Core/vendor/spdlog/include",
 		"../OpenGL-Core/src",
@@ -143,8 +144,12 @@ project "OpenGL-Sandbox"
 		'${IncludeDir.assimp}/assimp/code/Assbin/**' -- For caching
   }
 
+	-- Same Eigen configuration as PD-Core (see the header).
+	forceincludes { "pd_eigen_config.h" }
+
 	links
 	{
+		"PD-Core",
 		"OpenGL-Core",
     "assimp-vc142-mtd"
 	}

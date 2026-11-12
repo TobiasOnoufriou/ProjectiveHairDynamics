@@ -33,6 +33,7 @@ group "Dependencies"
 	include "OpenGL-Core/vendor/imgui"
 group ""
 
+include "PD-Core"
 include "OpenGL-Tests"
 include "OpenGL-Core"
 include "OpenGL-Sandbox"

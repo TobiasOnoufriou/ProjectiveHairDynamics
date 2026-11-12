@@ -27,13 +27,23 @@
 // Contact Tiantian Liu (ltt1598@gmail.com) if you have any questions.              //
 //----------------------------------------------------------------------------------//
 
-#include "math_headers.h"
+#pragma once
+#include <eigen/Eigen/Core>
+#include <eigen/Eigen/Dense>
+#include <eigen/Eigen/Sparse>
 
-glm::vec3 Eigen2GLM(const EigenVector3& eigen_vector)
-{
-  return glm::vec3(eigen_vector[0], eigen_vector[1], eigen_vector[2]);
-}
-EigenVector3 GLM2Eigen(const glm::vec3& glm_vector)
-{
-  return EigenVector3(glm_vector[0], glm_vector[1], glm_vector[2]);
-}
+#include <eigen/Eigen/Eigenvalues>
+
+typedef double ScalarType;
+typedef int IndexType;
+typedef Eigen::Matrix<ScalarType, 3, 3, 0, 3, 3> EigenMatrix3;
+typedef Eigen::Matrix<ScalarType, 3, 1, 0, 3, 1> EigenVector3; //Rows, Columns 
+typedef Eigen::Matrix<ScalarType, 2, 2, 0, 2, 2> EigenMatrix2;
+typedef Eigen::Matrix<ScalarType, 2, 1, 0, 2, 1> EigenVector2;
+typedef Eigen::Matrix<ScalarType, -1, 3, 0, -1, 3> EigenMatrix3x;
+typedef Eigen::Matrix<ScalarType, Eigen::Dynamic, 1> VectorX;
+typedef Eigen::Matrix<ScalarType, Eigen::Dynamic, Eigen::Dynamic> Matrix;
+typedef Eigen::SparseMatrix<ScalarType> SparseMatrix;
+typedef Eigen::Triplet<ScalarType, IndexType> SparseMatrixTriplet;
+
+#define block_vector(a) block<3,1>(3*(a), 0)

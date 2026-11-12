@@ -231,11 +231,12 @@ TEST(PDSolverTest, StepDoesNotAllocate) {
       sim.m_acceleration = mode;
       sim.m_parallel_local_step = parallel;
       sim.Step();  // Warm-up: sizes the Anderson history.
-      pd_test::g_eigen_asserts = true;
+      const bool asserts = pd::g_eigen_asserts;
+      pd::g_eigen_asserts = true;
       Eigen::internal::set_is_malloc_allowed(false);
       for (int i = 0; i < 3; ++i) sim.Step();  // Aborts on an allocation.
       Eigen::internal::set_is_malloc_allowed(true);
-      pd_test::g_eigen_asserts = false;
+      pd::g_eigen_asserts = asserts;
     }
   }
   SUCCEED();

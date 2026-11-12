@@ -2,7 +2,7 @@
 #include <vector>
 #include "GLCore.h"
 #include <GLCoreUtils.h>
-#include "math_headers.h"
+#include "GlmEigen.h"
 
 // Draws simulated hair strands as GL_LINES. The buffers are created once and
 // the vertex data is re-uploaded every frame.

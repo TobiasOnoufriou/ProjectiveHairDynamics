@@ -1,6 +1,6 @@
--- Unit tests for the simulation code. The solver only depends on Eigen and glm,
--- so its sources are compiled straight into this executable: no OpenGL context,
--- window or assimp is needed and the tests can run headless in CI.
+-- Unit tests for the simulation code. Links the GL-free PD-Core library and
+-- compiles the sandbox's scene builders (also GL-free) directly: no OpenGL
+-- context, window or assimp is needed and the tests can run headless in CI.
 project "OpenGL-Tests"
   kind "ConsoleApp"
   language "C++"
@@ -15,25 +15,14 @@ project "OpenGL-Tests"
     "src/**.h",
     "src/**.cpp",
     "vendor/googletest/src/gtest-all.cc",
-    -- Simulation code under test.
-    "../OpenGL-Sandbox/src/PDSolver.h",
-    "../OpenGL-Sandbox/src/PDSolver.cpp",
+    -- GL-free scene builders from the sandbox (the solver itself is PD-Core).
     "../OpenGL-Sandbox/src/Scene.h",
     "../OpenGL-Sandbox/src/HairScene.h",
     "../OpenGL-Sandbox/src/HairScene.cpp",
-    "../OpenGL-Sandbox/src/TetMesh.h",
-    "../OpenGL-Sandbox/src/TetMesh.cpp",
     "../OpenGL-Sandbox/src/TetScene.h",
     "../OpenGL-Sandbox/src/TetScene.cpp",
     "../OpenGL-Sandbox/src/MuscleScene.h",
-    "../OpenGL-Sandbox/src/MuscleScene.cpp",
-    "../OpenGL-Sandbox/src/Collider.h",
-    "../OpenGL-Sandbox/src/Collider.cpp",
-    "../OpenGL-Sandbox/src/Constraint.h",
-    "../OpenGL-Sandbox/src/TetConstraints.h",
-    "../OpenGL-Sandbox/src/TetConstraints.cpp",
-    "../OpenGL-Sandbox/src/math_headers.h",
-    "../OpenGL-Sandbox/src/math_headers.cpp"
+    "../OpenGL-Sandbox/src/MuscleScene.cpp"
   }
 
   includedirs
@@ -41,13 +30,16 @@ project "OpenGL-Tests"
     "src",
     "vendor/googletest/include",
     "vendor/googletest",
+    "../PD-Core/src",
     "../OpenGL-Sandbox/src",
-    "../OpenGL-Core/vendor",
-    "../OpenGL-Core/%{IncludeDir.glm}"
+    "../OpenGL-Core/vendor"
   }
 
-  -- Eigen's runtime no-malloc check, switchable per test (see the header).
-  forceincludes { "eigen_test_config.h" }
+  links { "PD-Core" }
+
+  -- Same Eigen configuration as PD-Core; its runtime no-malloc check is
+  -- switchable per test (see the header).
+  forceincludes { "pd_eigen_config.h" }
 
   -- Only our own OpenMP loops (PDSolver::m_parallel_local_step) may use
   -- threads, so serial-vs-parallel timings are not muddied by Eigen's own.

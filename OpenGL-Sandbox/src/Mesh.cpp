@@ -1,7 +1,7 @@
 // Copyright 2022 Tobias Onoufriou
 
 #include "Mesh.hpp"
-#include "math_headers.h"
+#include "GlmEigen.h"
 
 
 Mesh::Mesh(std::vector<Vertex> vertices,

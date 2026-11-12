@@ -1,7 +1,7 @@
 // Copyright 2022 Tobias Onoufriou
 #include "ModelLoader.hpp"
 
-#include "math_headers.h"
+#include "GlmEigen.h"
 
 
 ModelLoader::ModelLoader() {

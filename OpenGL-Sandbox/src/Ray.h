@@ -1,6 +1,6 @@
 #pragma once
 
-#include "math_headers.h"
+#include "GlmEigen.h"
 
 class Ray {
 public:

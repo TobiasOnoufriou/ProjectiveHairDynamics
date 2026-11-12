@@ -4,7 +4,7 @@
 #include "GLCore.h"
 #include <GLCoreUtils.h>
 
-#include "math_headers.h"
+#include "GlmEigen.h"
 
 // Draws a deforming triangle surface (e.g. the boundary of a tet mesh) with
 // per-vertex normals recomputed from the current positions every upload.

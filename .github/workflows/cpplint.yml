@@ -12,4 +12,4 @@ jobs:
           python-version: "3.x"
       - run: pip install cpplint
       # Lint only our own sources, never vendored libraries.
-      - run: cpplint --recursive --extensions=h,hpp,cpp OpenGL-Sandbox/src OpenGL-Tests/src
+      - run: cpplint --recursive --extensions=h,hpp,cpp PD-Core/src OpenGL-Sandbox/src OpenGL-Tests/src
