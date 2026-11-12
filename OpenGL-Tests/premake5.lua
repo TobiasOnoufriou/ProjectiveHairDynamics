@@ -26,6 +26,8 @@ project "OpenGL-Tests"
     "../OpenGL-Sandbox/src/TetScene.h",
     "../OpenGL-Sandbox/src/TetScene.cpp",
     "../OpenGL-Sandbox/src/Constraint.h",
+    "../OpenGL-Sandbox/src/TetConstraints.h",
+    "../OpenGL-Sandbox/src/TetConstraints.cpp",
     "../OpenGL-Sandbox/src/math_headers.h",
     "../OpenGL-Sandbox/src/math_headers.cpp"
   }
@@ -39,8 +41,13 @@ project "OpenGL-Tests"
     "../OpenGL-Core/%{IncludeDir.glm}"
   }
 
+  -- Only our own OpenMP loops (PDSolver::m_parallel_local_step) may use
+  -- threads, so serial-vs-parallel timings are not muddied by Eigen's own.
+  defines { "EIGEN_DONT_PARALLELIZE" }
+
   filter "system:windows"
     systemversion "latest"
+    buildoptions { "/openmp" }
 
   filter "configurations:Debug"
     runtime "Debug"

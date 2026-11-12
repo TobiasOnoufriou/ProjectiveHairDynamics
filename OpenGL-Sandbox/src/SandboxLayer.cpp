@@ -303,7 +303,13 @@ void SandboxLayer::DrawMetricsTab() {
   ImGui::Text("Vertices: %u (%u fixed)   Constraints: %zu", m_sim->NumVertices(), m_sim->NumFixed(),
               m_sim->NumConstraints());
   ImGui::Text("Step: %.3f ms (avg %.3f ms)", stats.step_ms, m_avg_step_ms);
-  ImGui::Text("Max strain: %.3e", stats.max_strain);
+  ImGui::Text("Max strain: %.3e   Max volume error: %.3e", stats.max_strain, stats.max_volume_error);
+
+  // Race-free local step: every constraint projects into its own slot, so the
+  // OpenMP loop gives the same result as the serial one. Compare the ms/step.
+  ImGui::Checkbox("Parallel local step (OpenMP)", &m_sim->m_parallel_local_step);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%d threads", PDSolver::MaxThreads());
 
   ImGui::Checkbox("Track energy per iteration", &m_sim->m_track_energy);
   if (m_sim->m_track_energy && !stats.energy.empty()) {

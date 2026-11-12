@@ -6,8 +6,15 @@
 #include <utility>
 #include <vector>
 
+#include "TetConstraints.h"
+
 TetScene::TetScene()
-    : m_stiffness_edge(1e6),
+    : m_stiffness_strain(1e6),
+      m_stiffness_volume(1e6),
+      m_min_stretch(1.0),
+      m_max_stretch(1.0),
+      m_min_volume(1.0),
+      m_max_volume(1.0),
       m_density(1000.0),
       m_resolution(10.0),
       m_show_wireframe(false),
@@ -16,7 +23,12 @@ TetScene::TetScene()
 }
 
 TetScene::TetScene(TetMesh mesh)
-    : m_stiffness_edge(1e6),
+    : m_stiffness_strain(1e6),
+      m_stiffness_volume(1e6),
+      m_min_stretch(1.0),
+      m_max_stretch(1.0),
+      m_min_volume(1.0),
+      m_max_volume(1.0),
       m_density(1000.0),
       m_resolution(0.0),
       m_show_wireframe(false),
@@ -43,10 +55,15 @@ void TetScene::Build(PDSolver* solver) {
     if (m_mesh.vertices(i, 0) <= min_x + 1e-6 * extent) solver->SetFixed(i);
   }
 
+  for (const TetMesh::Tet& tet : m_mesh.tets) {
+    solver->AddConstraint(std::make_unique<TetStrainConstraint>(&m_stiffness_strain, tet, m_mesh.vertices,
+                                                                &m_min_stretch, &m_max_stretch));
+    solver->AddConstraint(std::make_unique<TetVolumeConstraint>(&m_stiffness_volume, tet, m_mesh.vertices,
+                                                                &m_min_volume, &m_max_volume));
+  }
+
   m_edge_indices.clear();
   for (const auto& e : m_mesh.Edges()) {
-    const ScalarType rest = (m_mesh.vertices.row(e[0]) - m_mesh.vertices.row(e[1])).norm();
-    solver->AddConstraint(std::make_unique<SpringConstraint>(&m_stiffness_edge, e[0], e[1], rest));
     m_edge_indices.push_back(e[0]);
     m_edge_indices.push_back(e[1]);
   }
@@ -65,7 +82,10 @@ const std::vector<unsigned int>& TetScene::LineIndices() const {
 
 std::vector<SceneParam> TetScene::Params() {
   std::vector<SceneParam> params = {
-      {"Edge stiffness", &m_stiffness_edge, 1e3f, 1e8f, true, SceneParam::kSystemMatrix},
+      {"Strain stiffness", &m_stiffness_strain, 1e3f, 1e9f, true, SceneParam::kSystemMatrix},
+      {"Volume stiffness", &m_stiffness_volume, 0.0f, 1e9f, true, SceneParam::kSystemMatrix},
+      {"Min stretch", &m_min_stretch, 0.0f, 1.0f, false, SceneParam::kNone},
+      {"Max stretch", &m_max_stretch, 1.0f, 3.0f, false, SceneParam::kNone},
       {"Density (kg/m^3)", &m_density, 10.0f, 1e4f, true, SceneParam::kRebuildScene},
   };
   if (m_procedural) params.push_back({"Cells along beam", &m_resolution, 1.0f, 40.0f, false, SceneParam::kRebuildScene});

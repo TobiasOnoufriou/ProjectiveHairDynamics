@@ -194,14 +194,14 @@ TEST(TetSceneTest, BuildsClampedBeam) {
   scene.Build(&sim);
   ASSERT_TRUE(sim.IsReady());
   EXPECT_EQ(sim.NumVertices(), scene.Mesh().NumVertices());
-  EXPECT_EQ(sim.NumConstraints(), scene.Mesh().Edges().size());
+  EXPECT_EQ(sim.NumConstraints(), 2 * scene.Mesh().NumTets());  // Strain + volume per tet.
   // One 3x3 grid of vertices at the clamped end (10 x 2 x 2 cells).
   EXPECT_EQ(sim.NumFixed(), 9u);
   EXPECT_NEAR(sim.GetMasses().sum(), 1000.0 * 0.04, 1e-9);
   EXPECT_EQ(scene.SurfaceIndices().size() % 3, 0u);
   EXPECT_TRUE(scene.LineIndices().empty());
   scene.m_show_wireframe = true;
-  EXPECT_EQ(scene.LineIndices().size(), 2 * sim.NumConstraints());
+  EXPECT_EQ(scene.LineIndices().size(), 2 * scene.Mesh().Edges().size());
 }
 
 TEST(TetSceneTest, RestPoseIsStableWithoutGravity) {

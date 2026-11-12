@@ -7,6 +7,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 PDSolver::PDSolver()
     : m_h(1.0 / 60.0),
       m_gravity_constant(9.81),
@@ -15,6 +19,8 @@ PDSolver::PDSolver()
       m_iterations_per_step(10),
       m_max_substeps_per_frame(4),
       m_track_energy(false),
+      m_parallel_local_step(false),
+      m_row_offset(1, 0),
       m_system_ready(false),
       m_time_accumulator(0.0) {}
 
@@ -30,6 +36,10 @@ void PDSolver::Clear() {
   m_free_index.clear();
   m_free_vertices.clear();
   m_fixed_vertices.clear();
+  m_row_offset.assign(1, 0);
+  m_weights.clear();
+  m_j.resize(0, 0);
+  m_gather.resize(0, 0);
   m_system_ready = false;
   m_time_accumulator = 0.0;
   m_stats = PDStepStats();
@@ -65,6 +75,20 @@ void PDSolver::SetFixedTarget(unsigned int vertex, const EigenVector3& target) {
   m_positions.row(vertex) = target.transpose();
 }
 
+size_t PDSolver::numActiveConstraints() const {
+  return m_constraints.size() + (m_drag_constraint ? 1 : 0);
+}
+
+size_t PDSolver::numLaidOut(const EigenMatrix3x& x) const {
+  // Constraints stacked by the last RebuildSystemMatrix(), if it matches x.
+  if (m_row_offset.empty() || m_j.cols() != x.rows()) return 0;
+  return m_row_offset.size() - 1;
+}
+
+const Constraint& PDSolver::activeConstraint(size_t k) const {
+  return k < m_constraints.size() ? *m_constraints[k] : *m_drag_constraint;
+}
+
 void PDSolver::RebuildSystemMatrix() {
   const unsigned int n = NumVertices();
 
@@ -84,31 +108,70 @@ void PDSolver::RebuildSystemMatrix() {
   const int nf = static_cast<int>(m_free_vertices.size());
   const int nc = static_cast<int>(m_fixed_vertices.size());
 
-  // Full A = M/h^2 + sum_i w_i G_i^T G_i, as triplets.
-  std::vector<SparseMatrixTriplet> triplets;
-  triplets.reserve(n + m_constraints.size() * 4 + 1);
-  const ScalarType inv_h2 = 1.0 / (m_h * m_h);
-  for (unsigned int i = 0; i < n; ++i) triplets.emplace_back(i, i, m_masses[i] * inv_h2);
-  for (const auto& c : m_constraints) c->AddToLHS(&triplets);
-  if (m_drag_constraint) m_drag_constraint->AddToLHS(&triplets);
+  // Stack every active constraint's G into J and record its rows and weight.
+  const size_t num_active = numActiveConstraints();
+  m_row_offset.assign(num_active + 1, 0);
+  m_weights.resize(num_active);
+  std::vector<SparseMatrixTriplet> j_triplets;
+  j_triplets.reserve(num_active * 12);
+  for (size_t k = 0; k < num_active; ++k) {
+    const Constraint& c = activeConstraint(k);
+    c.AddG(m_row_offset[k], &j_triplets);
+    m_row_offset[k + 1] = m_row_offset[k] + c.NumRows();
+    m_weights[k] = c.Weight();
+  }
+  const int rows = m_row_offset.back();
+  m_j.resize(rows, n);
+  m_j.setFromTriplets(j_triplets.begin(), j_triplets.end());
+  m_gx.setZero(rows, 3);
+  m_projections.setZero(rows, 3);
 
-  // Split into the free block A_ff and the coupling A_fc. Rows of fixed
-  // vertices are dropped: their positions are known.
-  std::vector<SparseMatrixTriplet> ff, fc;
-  ff.reserve(triplets.size());
-  for (const SparseMatrixTriplet& t : triplets) {
-    const int r = m_free_index[t.row()];
-    if (r < 0) continue;
-    const int c = m_free_index[t.col()];
-    if (c >= 0) {
-      ff.emplace_back(r, c, t.value());
-    } else {
-      fc.emplace_back(r, fixed_index[t.col()], t.value());
-    }
+  // A = M/h^2 + J^T W J with W = per-row weights.
+  VectorX w_rows(rows);
+  for (size_t k = 0; k < num_active; ++k) {
+    w_rows.segment(m_row_offset[k], m_row_offset[k + 1] - m_row_offset[k]).setConstant(m_weights[k]);
+  }
+  const SparseMatrix j_col(m_j);
+  const SparseMatrix jt_w = SparseMatrix(j_col.transpose()) * w_rows.asDiagonal();
+  SparseMatrix a = jt_w * j_col;
+  const ScalarType inv_h2 = 1.0 / (m_h * m_h);
+  {
+    std::vector<SparseMatrixTriplet> mass;
+    mass.reserve(n);
+    for (unsigned int i = 0; i < n; ++i) mass.emplace_back(i, i, m_masses[i] * inv_h2);
+    SparseMatrix m(n, n);
+    m.setFromTriplets(mass.begin(), mass.end());
+    a += m;
   }
 
+  // Split into the free block A_ff and the coupling A_fc. Rows of fixed
+  // vertices are dropped: their positions are known. The gather matrix keeps
+  // the free rows of J^T W.
+  std::vector<SparseMatrixTriplet> ff, fc, gather;
+  ff.reserve(a.nonZeros());
+  for (int col = 0; col < a.outerSize(); ++col) {
+    for (SparseMatrix::InnerIterator it(a, col); it; ++it) {
+      const int r = m_free_index[it.row()];
+      if (r < 0) continue;
+      const int c = m_free_index[it.col()];
+      if (c >= 0) {
+        ff.emplace_back(r, c, it.value());
+      } else {
+        fc.emplace_back(r, fixed_index[it.col()], it.value());
+      }
+    }
+  }
+  for (int col = 0; col < jt_w.outerSize(); ++col) {
+    for (SparseMatrix::InnerIterator it(jt_w, col); it; ++it) {
+      const int r = m_free_index[it.row()];
+      if (r >= 0) gather.emplace_back(r, static_cast<int>(it.col()), it.value());
+    }
+  }
+  m_gather.resize(nf, rows);
+  m_gather.setFromTriplets(gather.begin(), gather.end());
+
   SparseMatrix a_ff(nf, nf);
-  a_ff.setFromTriplets(ff.begin(), ff.end());  // Duplicates are summed.
+  a_ff.setFromTriplets(ff.begin(), ff.end());
   m_coupling.resize(nf, nc);
   m_coupling.setFromTriplets(fc.begin(), fc.end());
 
@@ -158,10 +221,28 @@ void PDSolver::Update(float dt) {
   }
 }
 
-ScalarType PDSolver::localStep(const EigenMatrix3x& x, EigenMatrix3x* b) const {
+int PDSolver::MaxThreads() {
+#ifdef _OPENMP
+  return omp_get_max_threads();
+#else
+  return 1;
+#endif
+}
+
+ScalarType PDSolver::localStep(const EigenMatrix3x& x, RowMatrix3x* gx, RowMatrix3x* p) const {
+  const int num_active = static_cast<int>(numLaidOut(x));
+  if (num_active == 0) return 0.0;
+  gx->noalias() = m_j * x;
+  // Each constraint reads and writes only its own rows: no races, and the same
+  // projections whatever the thread count (only the energy sum is reordered).
   ScalarType energy = 0.0;
-  for (const auto& c : m_constraints) energy += c->AddToRHS(x, b);
-  if (m_drag_constraint) energy += m_drag_constraint->AddToRHS(x, b);
+#pragma omp parallel for schedule(static) reduction(+ : energy) if (m_parallel_local_step)
+  for (int k = 0; k < num_active; ++k) {
+    const int first = m_row_offset[k];
+    const int count = m_row_offset[k + 1] - first;
+    activeConstraint(k).Project(gx->middleRows(first, count), p->middleRows(first, count));
+    energy += 0.5 * m_weights[k] * (gx->middleRows(first, count) - p->middleRows(first, count)).squaredNorm();
+  }
   return energy;
 }
 
@@ -172,20 +253,38 @@ ScalarType PDSolver::inertiaEnergy(const EigenMatrix3x& x, const EigenMatrix3x& 
 }
 
 ScalarType PDSolver::ConstraintEnergy(const EigenMatrix3x& x) const {
-  EigenMatrix3x scratch = EigenMatrix3x::Zero(x.rows(), 3);
-  return localStep(x, &scratch);
+  RowMatrix3x gx(m_j.rows(), 3), p(m_j.rows(), 3);
+  return localStep(x, &gx, &p);
 }
 
 ScalarType PDSolver::MaxStrain(const EigenMatrix3x& x) const {
+  const size_t num = numLaidOut(x);
+  if (num == 0) return 0.0;
+  const RowMatrix3x gx = m_j * x;
   ScalarType worst = 0.0;
-  for (const auto& c : m_constraints) worst = std::max(worst, c->Strain(x));
+  for (size_t k = 0; k < num; ++k) {
+    const int first = m_row_offset[k];
+    worst = std::max(worst, activeConstraint(k).Strain(gx.middleRows(first, m_row_offset[k + 1] - first)));
+  }
+  return worst;
+}
+
+ScalarType PDSolver::MaxVolumeError(const EigenMatrix3x& x) const {
+  const size_t num = numLaidOut(x);
+  if (num == 0) return 0.0;
+  const RowMatrix3x gx = m_j * x;
+  ScalarType worst = 0.0;
+  for (size_t k = 0; k < num; ++k) {
+    const int first = m_row_offset[k];
+    worst = std::max(worst,
+                     activeConstraint(k).VolumeError(gx.middleRows(first, m_row_offset[k + 1] - first)));
+  }
   return worst;
 }
 
 void PDSolver::Step() {
   if (!m_system_ready) return;
   const auto start = std::chrono::steady_clock::now();
-  const unsigned int n = NumVertices();
   const ScalarType inv_h2 = 1.0 / (m_h * m_h);
 
   // Inertial prediction with gravity folded in (f = m g, so M^-1 f = g):
@@ -194,32 +293,34 @@ void PDSolver::Step() {
   y.col(1).array() -= m_h * m_h * m_gravity_constant;
   for (unsigned int i : m_fixed_vertices) y.row(i) = m_positions.row(i);
 
-  // Constant part of the RHS: M/h^2 y.
-  EigenMatrix3x b0 = (m_masses * inv_h2).asDiagonal() * y;
-
-  // Known positions of the fixed vertices, moved to the RHS through A_fc.
+  // Constant part of the RHS on the free vertices: M/h^2 y - A_fc x_c. The known
+  // positions x_c of the fixed vertices are moved to the RHS through A_fc.
+  const size_t nf = m_free_vertices.size();
   EigenMatrix3x x_fixed(m_fixed_vertices.size(), 3);
   for (size_t k = 0; k < m_fixed_vertices.size(); ++k) x_fixed.row(k) = m_positions.row(m_fixed_vertices[k]);
-  const EigenMatrix3x coupling_rhs = m_coupling * x_fixed;
+  EigenMatrix3x b0_free(nf, 3);
+  for (size_t k = 0; k < nf; ++k) {
+    const unsigned int i = m_free_vertices[k];
+    b0_free.row(k) = (m_masses[i] * inv_h2) * y.row(i);
+  }
+  if (!m_fixed_vertices.empty()) b0_free -= m_coupling * x_fixed;
 
-  const size_t nf = m_free_vertices.size();
   EigenMatrix3x x = y;
-  EigenMatrix3x b(n, 3);
   EigenMatrix3x b_free(nf, 3);
   m_stats.energy.clear();
   for (int it = 0; it < m_iterations_per_step; ++it) {
-    // Local step: each constraint projects independently.
-    b = b0;
-    const ScalarType constraint_energy = localStep(x, &b);
+    // Local step: each constraint projects into its own slot of P.
+    const ScalarType constraint_energy = localStep(x, &m_gx, &m_projections);
     if (m_track_energy) m_stats.energy.push_back(inertiaEnergy(x, y) + constraint_energy);
     if (nf == 0) break;
-    // Global step on the free vertices only; one factor for x, y and z.
-    for (size_t k = 0; k < nf; ++k) b_free.row(k) = b.row(m_free_vertices[k]);
-    b_free -= coupling_rhs;
+    // Gather b = b0 + J^T W P, then the global step on the free vertices only;
+    // one factor for x, y and z.
+    b_free = b0_free;
+    b_free.noalias() += m_gather * m_projections;
     const EigenMatrix3x x_free = m_llt.solve(b_free);
     for (size_t k = 0; k < nf; ++k) x.row(m_free_vertices[k]) = x_free.row(k);
   }
-  if (m_track_energy) m_stats.energy.push_back(inertiaEnergy(x, y) + ConstraintEnergy(x));
+  if (m_track_energy) m_stats.energy.push_back(inertiaEnergy(x, y) + localStep(x, &m_gx, &m_projections));
 
   m_velocities = (x - m_positions) / m_h;
   m_velocities *= (1.0 - m_damping_coefficient);
@@ -228,4 +329,5 @@ void PDSolver::Step() {
   m_stats.step_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
   m_stats.max_strain = MaxStrain(m_positions);
+  m_stats.max_volume_error = MaxVolumeError(m_positions);
 }

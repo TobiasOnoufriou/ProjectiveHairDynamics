@@ -11,10 +11,21 @@
 // once per coordinate (x, y, z), with positions stored as an N x 3 matrix where
 // row i is particle i.
 //
-// Each constraint i has the PD energy  E_i(x) = w_i/2 * ||G_i x - p_i(x)||^2,
-// where p_i(x) is the projection of G_i x onto the constraint set, and contributes:
-//   LHS (global, constant): w_i * G_i^T G_i
-//   RHS (local, per step):  w_i * G_i^T p_i
+// Constraint i owns NumRows() rows of the stacked selection matrix J (its G_i)
+// and the same rows of the projection buffer P. Its energy is
+//   E_i(x) = w_i/2 * ||G_i x - p_i||^2,
+// with p_i = Project(G_i x) the closest point of the constraint set. The solver
+// assembles from these:
+//   LHS (global, constant): sum_i w_i G_i^T G_i = J^T W J
+//   RHS (local, per step):  sum_i w_i G_i^T p_i = J^T W P
+// Project() only reads G_i x and writes its own rows of P, so the local step is
+// race-free and can run in parallel; the gather J^T W P is one sparse product.
+
+// Row-major N x 3 buffer: the rows of one constraint are contiguous.
+using RowMatrix3x = Eigen::Matrix<ScalarType, Eigen::Dynamic, 3, Eigen::RowMajor>;
+// A constraint's slice (NumRows() x 3) of the G x and P buffers.
+using ConstRows = Eigen::Ref<const RowMatrix3x>;
+using Rows = Eigen::Ref<RowMatrix3x>;
 
 class Constraint {
  public:
@@ -22,15 +33,22 @@ class Constraint {
   virtual ~Constraint() {}
 
   ScalarType Stiffness() const { return *m_stiffness; }
+  // Energy weight w. Defaults to the stiffness; volumetric constraints scale it
+  // by the rest volume so the material does not depend on the mesh resolution.
+  virtual ScalarType Weight() const { return Stiffness(); }
 
-  // Adds w * G^T G to the N x N system matrix.
-  virtual void AddToLHS(std::vector<SparseMatrixTriplet>* triplets) const = 0;
-  // Local step: projects the current positions x onto the constraint, adds
-  // w * G^T p to the right-hand side b (both N x 3) and returns the constraint
-  // energy w/2 ||G x - p||^2 at x (free, since the projection is computed anyway).
-  virtual ScalarType AddToRHS(const EigenMatrix3x& x, EigenMatrix3x* b) const = 0;
+  // Number of rows of G (each row is one 3-vector of G x).
+  virtual int NumRows() const = 0;
+  // Appends the (unweighted) entries of G, shifted down to start at first_row.
+  virtual void AddG(int first_row, std::vector<SparseMatrixTriplet>* triplets) const = 0;
+  // Local step: given gx = G x, writes the projection p onto the constraint set.
+  // Must only depend on gx (and the constraint's own data).
+  virtual void Project(const ConstRows& gx, Rows p) const = 0;
+
   // Dimensionless violation used for metrics (e.g. relative spring strain).
-  virtual ScalarType Strain(const EigenMatrix3x& /*x*/) const { return 0.0; }
+  virtual ScalarType Strain(const ConstRows& /*gx*/) const { return 0.0; }
+  // Relative volume change |det F - 1| (volumetric constraints only).
+  virtual ScalarType VolumeError(const ConstRows& /*gx*/) const { return 0.0; }
 
  protected:
   // Points at a parameter owned by the scene or solver so stiffness can be
@@ -40,6 +58,7 @@ class Constraint {
 
 // Soft pin of a particle to a target point (used for mouse dragging). Hard pins
 // such as hair roots use PDSolver::SetFixed instead (exact Dirichlet condition).
+// G = e_p0^T, p = target.
 class AttachmentConstraint : public Constraint {
  public:
   AttachmentConstraint(const ScalarType* stiffness, unsigned int p0,
@@ -48,16 +67,15 @@ class AttachmentConstraint : public Constraint {
 
   unsigned int GetConstrainedVertexIndex() const { return m_p0; }
   EigenVector3 GetFixedPoint() const { return m_fixed_point; }
+  // Only moves p: right-hand side only.
   void SetFixedPoint(const EigenVector3& target) { m_fixed_point = target; }
 
-  void AddToLHS(std::vector<SparseMatrixTriplet>* triplets) const override {
-    triplets->emplace_back(m_p0, m_p0, Stiffness());
+  int NumRows() const override { return 1; }
+  void AddG(int first_row, std::vector<SparseMatrixTriplet>* triplets) const override {
+    triplets->emplace_back(first_row, m_p0, 1.0);
   }
-
-  ScalarType AddToRHS(const EigenMatrix3x& x, EigenMatrix3x* b) const override {
-    const ScalarType w = Stiffness();
-    b->row(m_p0) += w * m_fixed_point.transpose();
-    return 0.5 * w * (x.row(m_p0).transpose() - m_fixed_point).squaredNorm();
+  void Project(const ConstRows& /*gx*/, Rows p) const override {
+    p.row(0) = m_fixed_point.transpose();
   }
 
  private:
@@ -66,7 +84,7 @@ class AttachmentConstraint : public Constraint {
 };
 
 // Keeps two particles at a rest distance. Used for both stretch (i, i+1) and
-// bending (i, i+2) springs along a strand.
+// bending (i, i+2) springs along a strand. G = e_p0^T - e_p1^T.
 class SpringConstraint : public Constraint {
  public:
   SpringConstraint(const ScalarType* stiffness, unsigned int p0, unsigned int p1,
@@ -77,34 +95,26 @@ class SpringConstraint : public Constraint {
   unsigned int GetConstrainedVertexIndex1() const { return m_p0; }
   unsigned int GetConstrainedVertexIndex2() const { return m_p1; }
 
-  // G = e_p0 - e_p1, so G^T G has +w on both diagonals and -w off-diagonal.
-  void AddToLHS(std::vector<SparseMatrixTriplet>* triplets) const override {
-    const ScalarType w = Stiffness();
-    triplets->emplace_back(m_p0, m_p0, w);
-    triplets->emplace_back(m_p1, m_p1, w);
-    triplets->emplace_back(m_p0, m_p1, -w);
-    triplets->emplace_back(m_p1, m_p0, -w);
+  int NumRows() const override { return 1; }
+  void AddG(int first_row, std::vector<SparseMatrixTriplet>* triplets) const override {
+    triplets->emplace_back(first_row, m_p0, 1.0);
+    triplets->emplace_back(first_row, m_p1, -1.0);
   }
 
-  // Projection: the spring vector with its length reset to the rest length.
-  // Energy: w/2 (|x0 - x1| - L)^2.
-  ScalarType AddToRHS(const EigenMatrix3x& x, EigenMatrix3x* b) const override {
-    const EigenVector3 diff = (x.row(m_p0) - x.row(m_p1)).transpose();
-    const ScalarType len = diff.norm();
-    const ScalarType w = Stiffness();
-    // Degenerate: no defined direction, so use p = 0 (adds nothing to b). The
-    // returned energy is still the true distance to the constraint set, which
-    // is >= the energy with p = 0, so iterations still never increase energy.
-    if (len < 1e-12) return 0.5 * w * m_rest_length * m_rest_length;
-    const EigenVector3 d = (m_rest_length / len) * diff;
-    b->row(m_p0) += w * d.transpose();
-    b->row(m_p1) -= w * d.transpose();
-    return 0.5 * w * (len - m_rest_length) * (len - m_rest_length);
+  // Projection: the spring vector with its length reset to the rest length,
+  // so the energy is w/2 (|x0 - x1| - L)^2. A degenerate (zero-length) spring
+  // has no direction; any vector of length L is then a closest point, so pick x.
+  void Project(const ConstRows& gx, Rows p) const override {
+    const ScalarType len = gx.row(0).norm();
+    if (len < 1e-12) {
+      p.row(0) << m_rest_length, 0.0, 0.0;
+    } else {
+      p.row(0) = (m_rest_length / len) * gx.row(0);
+    }
   }
 
-  ScalarType Strain(const EigenMatrix3x& x) const override {
-    const ScalarType len = (x.row(m_p0) - x.row(m_p1)).norm();
-    return std::abs(len - m_rest_length) / m_rest_length;
+  ScalarType Strain(const ConstRows& gx) const override {
+    return std::abs(gx.row(0).norm() - m_rest_length) / m_rest_length;
   }
 
  private:

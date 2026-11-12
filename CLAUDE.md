@@ -16,13 +16,18 @@ The hair solver must keep working as a regression scene while the muscle work la
   Vendored deps live in `OpenGL-Core/vendor/` (GLFW, Glad, imgui, glm, eigen, assimp, spdlog). Do not edit vendor code.
 - `OpenGL-Sandbox/src/` - the actual project:
   - `PDSolver.h/.cpp` - generic PD solver: per-vertex lumped masses, exact Dirichlet (fixed) vertices eliminated
-    from the system, constraint list, prefactored `SimplicialLLT` of the free block, fixed time step with accumulator,
-    per-step stats (ms/step, energy per iteration, max strain).
-  - `Constraint.h` - PD constraints (`AttachmentConstraint` for soft drag, `SpringConstraint`). Each adds `w*G^T G` to the
-    LHS, `w*G^T p` to the RHS, and returns its energy `w/2 ||Gx - p||^2` from `AddToRHS`.
+    from the system, constraint list stacked into one sparse `J` (A = M/h^2 + J^T W J), prefactored `SimplicialLLT`
+    of the free block, race-free local step (each constraint projects into its own rows of a projection buffer,
+    optional OpenMP via `m_parallel_local_step`, gather `J^T W P` is one sparse product), fixed time step with
+    accumulator, per-step stats (ms/step, energy per iteration, max strain, max volume error).
+  - `Constraint.h` - PD constraint interface plus `AttachmentConstraint` (soft drag) and `SpringConstraint`. A constraint
+    declares `NumRows()`, its `G` entries (`AddG`), a `Weight()`, and `Project(Gx) -> p`, which may only write its
+    own slice. The solver computes energies `w/2 ||Gx - p||^2` and assembles LHS/RHS.
+  - `TetConstraints.*` - per-tet `G = Dm^-T E` (so `Gx = F^T`), corotational strain (clamped signed SVD) and volume
+    (det F range, Gauss-Newton on singular values) constraints, weighted by stiffness * rest volume.
   - `TetMesh.*` - tet mesh data (positive-orientation convention), procedural Kuhn-subdivided beam, TetGen
     `.node/.ele` load/save, boundary triangles, edges, lumped masses, vertex normals. No GL, tested headless.
-  - `TetScene.*` - clamped tet beam (edge springs until Phase 3 replaces them with strain constraints).
+  - `TetScene.*` - clamped cantilever tet beam with a strain + volume constraint per tet.
   - `SurfaceRenderer.*` - lit triangle surface (`Scene::SurfaceIndices`), normals recomputed per upload.
   - `Scene.h`, `HairScene.*` - scene builders that fill a `PDSolver` and expose tunable `SceneParam`s (no ImGui, so
     they are testable headless). New scenes are registered in `kScenes` in `SandboxLayer.cpp`.
@@ -99,11 +104,14 @@ Work through phases in order. Each phase should leave the app building, running 
 - [x] Extract boundary triangles and render the surface with normals.
 - [ ] Optional: embed a high-res render mesh with barycentric weights.
 
-### Phase 3: Volumetric constraints
-- [ ] Corotational strain constraint: F = Ds * Dm^-1, project to nearest rotation (SVD, fix reflections),
+### Phase 3: Volumetric constraints (done)
+- [x] Corotational strain constraint: F = Ds * Dm^-1, project to nearest rotation (SVD, fix reflections),
       optional singular-value clamping range (Bouaziz et al. 2014).
-- [ ] Volume-preservation constraint (clamp det F towards 1).
-- [ ] Demo: cantilever beam fixed at one end sagging under gravity. Tests: rotation invariance, rest-shape zero energy.
+- [x] Volume-preservation constraint (clamp det F towards 1).
+- [x] Demo: cantilever beam fixed at one end sagging under gravity. Tests: rotation invariance, rest-shape zero energy.
+- [x] Race-free local step: each constraint projects into its own slot of a projection buffer, then a gather adds
+      `w G^T p` into `b`. ImGui toggle for an OpenMP-parallel projection loop (`m_parallel_local_step`); compare
+      ms/step on and off. Test: serial and parallel steps give identical positions.
 
 ### Phase 4: Muscle model
 - [ ] Per-tet fibre direction (long axis for a beam; later a vector field).
@@ -115,7 +123,9 @@ Work through phases in order. Each phase should leave the app building, running 
 ### Phase 5: Performance
 - [ ] Flatten constraints into per-type arrays; fold constant RHS terms into `b0`; no per-step allocations.
 - [ ] Chebyshev acceleration (Wang 2015); evaluate Anderson acceleration (Peng et al. 2018).
-- [ ] Parallel local step (OpenMP). Compare error versus wall-clock time, not versus iteration count.
+- [ ] Evaluate the OpenMP toggle from Phase 3 at scale. Compare error versus wall-clock time, not versus iteration count.
+- [ ] Optional GPU backend behind the same toggle: local step and a Jacobi/Chebyshev global solve both on the GPU
+      (moving only the local step would be dominated by per-iteration transfers). Needs the flattened arrays above.
 
 ### Phase 6: Contact
 - [ ] Ground plane and bone collisions as fixed-weight slots or post-projection (no refactor).

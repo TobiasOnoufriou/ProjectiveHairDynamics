@@ -37,6 +37,8 @@ project "OpenGL-Sandbox"
 
   defines 
   {
+		-- Only PDSolver's own OpenMP loop (m_parallel_local_step) uses threads.
+		"EIGEN_DONT_PARALLELIZE",
 		-- "SWIG",
 		"ASSIMP_BUILD_NO_OWN_ZLIB",
 
@@ -154,6 +156,7 @@ project "OpenGL-Sandbox"
 		{
 			"GLCORE_PLATFORM_WINDOWS"
 		}
+		buildoptions { "/openmp" }
 
 	filter "configurations:Debug"
 		defines "GLCORE_DEBUG"

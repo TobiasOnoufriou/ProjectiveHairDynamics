@@ -7,11 +7,11 @@
 // A tetrahedral volume, clamped (Dirichlet) at its minimum-x end, sagging under
 // gravity like a cantilever. Masses are lumped from density * tet volume.
 //
-// Until the volumetric constraints of Phase 3 land, the material is a mass-spring
-// network on the tet edges (Liu et al. 2013): every edge keeps its rest length.
-// A tet mesh is a rigid framework, so this already holds its shape, but it is
-// mesh-dependent and does not preserve volume; the corotational strain constraint
-// (Bouaziz et al. 2014) replaces it.
+// The material is the PD continuum model of Bouaziz et al. 2014: one corotational
+// strain constraint per tet (singular values of F clamped to
+// [m_min_stretch, m_max_stretch]) plus one volume constraint per tet (det F
+// towards 1). Both are weighted by rest volume, so the stiffness is a material
+// property independent of the mesh resolution.
 class TetScene : public Scene {
  public:
   // Default: procedural 1 x 0.2 x 0.2 m beam, m_resolution cells along its length.
@@ -28,7 +28,12 @@ class TetScene : public Scene {
 
   const TetMesh& Mesh() const { return m_mesh; }
 
-  ScalarType m_stiffness_edge;
+  ScalarType m_stiffness_strain;  // Weight per unit rest volume (Pa-like).
+  ScalarType m_stiffness_volume;
+  ScalarType m_min_stretch;       // Strain clamp range (RHS only).
+  ScalarType m_max_stretch;
+  ScalarType m_min_volume;        // Allowed det F range (RHS only).
+  ScalarType m_max_volume;
   ScalarType m_density;     // kg / m^3.
   ScalarType m_resolution;  // Cells along the beam (procedural beam only).
   bool m_show_wireframe;

@@ -11,7 +11,8 @@ struct PDStepStats {
   // Total PD energy E(x_k) before iteration k and after the last one
   // (iterations + 1 values). Only filled when m_track_energy is set.
   std::vector<ScalarType> energy;
-  ScalarType max_strain = 0.0;      // Max Constraint::Strain after the step.
+  ScalarType max_strain = 0.0;        // Max Constraint::Strain after the step.
+  ScalarType max_volume_error = 0.0;  // Max Constraint::VolumeError after the step.
 };
 
 // Generic Projective Dynamics solver (Bouaziz et al. 2014) on a set of
@@ -23,10 +24,15 @@ struct PDStepStats {
 //   y  = x + h v + h^2 g                     (inertia + gravity, free vertices)
 //   b0 = M/h^2 y
 //   repeat iterations:
-//     local:  b = b0 + sum_i w_i G_i^T p_i(x)
+//     local:  P = project(J x)               (each constraint its own rows of P)
+//     gather: b = b0 + J^T W P               (one sparse product)
 //     global: A_ff x_f = b_f - A_fc x_c      (prefactored)
 //   v = (x_new - x_old) / h, then damped.
-// A = M/h^2 + sum_i w_i G_i^T G_i. Fixed (Dirichlet) vertices x_c are eliminated
+// J stacks every constraint's G_i, W holds their weights w_i, and
+// A = M/h^2 + J^T W J. The projections are written into disjoint slots of the
+// buffer P, so the local step is race-free and optionally runs in parallel
+// (m_parallel_local_step, OpenMP); serial and parallel give identical results.
+// Fixed (Dirichlet) vertices x_c are eliminated
 // from the system: only the free block A_ff is factored, and the coupling A_fc
 // moves their known positions to the RHS. Moving a fixed vertex (e.g. a bone
 // attachment) therefore only changes the RHS.
@@ -34,6 +40,8 @@ struct PDStepStats {
 // Each iteration minimises g(x, p) = 1/(2h^2) ||x - y||_M^2 + sum_i w_i/2
 // ||G_i x - p_i||^2 alternately over p and x, so the energy
 // E(x) = min_p g(x, p) never increases across iterations.
+using RowSparseMatrix = Eigen::SparseMatrix<ScalarType, Eigen::RowMajor>;
+
 class PDSolver {
  public:
   PDSolver();
@@ -85,10 +93,16 @@ class PDSolver {
   const VectorX& GetMasses() const { return m_masses; }
   const PDStepStats& GetStats() const { return m_stats; }
 
+  // The following need an up-to-date system (Finalize / RebuildSystemMatrix).
   // Sum of the constraint energies w_i/2 ||G_i x - p_i(x)||^2 (drag included).
   ScalarType ConstraintEnergy(const EigenMatrix3x& x) const;
   // Largest Constraint::Strain over all constraints at x.
   ScalarType MaxStrain(const EigenMatrix3x& x) const;
+  // Largest Constraint::VolumeError over all constraints at x.
+  ScalarType MaxVolumeError(const EigenMatrix3x& x) const;
+
+  // Threads available to the parallel local step (1 without OpenMP).
+  static int MaxThreads();
 
   // --- Tunable parameters ------------------------------------------------------
   // Changing m_h or m_stiffness_drag (while dragging) requires RebuildSystemMatrix().
@@ -99,12 +113,18 @@ class PDSolver {
   int m_iterations_per_step;
   int m_max_substeps_per_frame;
   bool m_track_energy;               // Record PDStepStats::energy (costs one extra local pass).
+  bool m_parallel_local_step;        // Project constraints with OpenMP threads.
 
  private:
   // Inertial part 1/(2h^2) sum_free m_i ||x_i - y_i||^2.
   ScalarType inertiaEnergy(const EigenMatrix3x& x, const EigenMatrix3x& y) const;
-  // Local step over all constraints; returns the summed constraint energy.
-  ScalarType localStep(const EigenMatrix3x& x, EigenMatrix3x* b) const;
+  // Local step: gx = J x, then every constraint projects its rows of gx into
+  // the same rows of p. Returns the summed constraint energy.
+  ScalarType localStep(const EigenMatrix3x& x, RowMatrix3x* gx, RowMatrix3x* p) const;
+  // Constraint k of the active list (m_constraints, then the drag constraint).
+  const Constraint& activeConstraint(size_t k) const;
+  size_t numActiveConstraints() const;
+  size_t numLaidOut(const EigenMatrix3x& x) const;
 
   std::vector<std::unique_ptr<Constraint>> m_constraints;
   std::unique_ptr<AttachmentConstraint> m_drag_constraint;  // Null when nothing is dragged.
@@ -120,8 +140,19 @@ class PDSolver {
   std::vector<unsigned int> m_free_vertices;
   std::vector<unsigned int> m_fixed_vertices;
 
+  // Stacked constraint rows. m_row_offset[k] is the first row of active
+  // constraint k in J, gx and P (size numActiveConstraints() + 1).
+  std::vector<int> m_row_offset;
+  std::vector<ScalarType> m_weights;          // w_k of each active constraint.
+  RowSparseMatrix m_j;                        // J (rows x N).
+  RowSparseMatrix m_gather;                   // Free rows of J^T W (free x rows).
+
   Eigen::SimplicialLLT<SparseMatrix> m_llt;  // Factor of A_ff.
   SparseMatrix m_coupling;                   // A_fc (free x fixed).
+
+  // Per-step buffers, kept to avoid reallocating every step.
+  RowMatrix3x m_gx;
+  RowMatrix3x m_projections;
   bool m_system_ready;
   double m_time_accumulator;
   PDStepStats m_stats;
