@@ -37,6 +37,15 @@ class Simulation {
   // Must be called after changing any stiffness or the time step.
   void RebuildSystemMatrix();
 
+  // Mouse dragging: a temporary soft attachment pulling one particle towards a
+  // target point. Begin/End refactor the system matrix; moving the target only
+  // changes the right-hand side, so UpdateDrag is cheap.
+  void BeginDrag(unsigned int particle, const EigenVector3& target);
+  void UpdateDrag(const EigenVector3& target);
+  void EndDrag();
+  bool IsDragging() const { return m_drag_constraint != nullptr; }
+  int DraggedParticle() const;
+
   unsigned int NumParticles() const { return static_cast<unsigned int>(m_positions.rows()); }
   const EigenMatrix3x& GetPositions() const { return m_positions; }
   const EigenMatrix3x& GetVelocities() const { return m_velocities; }
@@ -50,6 +59,7 @@ class Simulation {
   ScalarType m_stiffness_attachment;
   ScalarType m_stiffness_stretch;
   ScalarType m_stiffness_bending;
+  ScalarType m_stiffness_drag;
   ScalarType m_damping_coefficient;  // Fraction of velocity removed per step.
   int m_iterations_per_step;
   int m_max_substeps_per_frame;
@@ -58,6 +68,7 @@ class Simulation {
   void clearConstraints();
 
   std::vector<Constraint*> m_constraints;
+  AttachmentConstraint* m_drag_constraint;  // Null when nothing is dragged.
 
   EigenMatrix3x m_positions;         // N x 3, row i = particle i.
   EigenMatrix3x m_velocities;        // N x 3.

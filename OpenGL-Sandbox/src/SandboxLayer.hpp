@@ -21,6 +21,18 @@ public:
 	virtual void OnUpdate(GLCore::Timestep ts) override;
 	virtual void OnImGuiRender() override;
 private:
+  // Returns the particle whose screen projection is closest to the mouse
+  // (within kPickRadiusPx), or -1. Writes its NDC depth to out_ndc_depth.
+  int PickParticle(float mouse_x, float mouse_y, float* out_ndc_depth) const;
+  // Unprojects a mouse position at a fixed NDC depth back into world space.
+  glm::vec3 MouseToWorld(float mouse_x, float mouse_y, float ndc_depth) const;
+
+  void DrawSimulationTab();
+  void DrawCameraTab();
+
+  static constexpr float kPickRadiusPx = 15.0f;
+  float m_drag_ndc_depth = 0.0f;  // Keeps the dragged particle at a constant depth from the camera.
+
   std::unique_ptr<ModelLoader> model_loader_;
   std::unique_ptr<Mesh> mesh_;
   std::unique_ptr<Mesh> plane_;

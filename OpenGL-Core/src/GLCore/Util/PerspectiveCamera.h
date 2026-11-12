@@ -7,6 +7,8 @@ namespace GLCore::Utils {
 	class PerspecitiveCamera
 	{
 	public:
+		// FoV is the vertical field of view in degrees; min_unit/max_unit are the
+		// near/far clip distances and must satisfy 0 < near < far.
 		PerspecitiveCamera(float FoV, float aspect, float min_unit, float max_unit);
 
 		void SetProjection(float FoV, float aspect, float min_unit, float max_unit);

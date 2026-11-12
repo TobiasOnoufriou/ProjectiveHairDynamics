@@ -10,9 +10,11 @@ Simulation::Simulation()
       m_stiffness_attachment(1e6),
       m_stiffness_stretch(1e6),
       m_stiffness_bending(5e2),
+      m_stiffness_drag(5e4),
       m_damping_coefficient(0.02),
       m_iterations_per_step(10),
       m_max_substeps_per_frame(4),
+      m_drag_constraint(nullptr),
       m_system_ready(false),
       m_time_accumulator(0.0) {}
 
@@ -21,6 +23,8 @@ Simulation::~Simulation() { clearConstraints(); }
 void Simulation::clearConstraints() {
   for (Constraint* c : m_constraints) delete c;
   m_constraints.clear();
+  delete m_drag_constraint;
+  m_drag_constraint = nullptr;
 }
 
 void Simulation::InitHairStrands(const std::vector<EigenVector3>& roots,
@@ -73,6 +77,7 @@ void Simulation::RebuildSystemMatrix() {
 
   // + sum_i w_i G_i^T G_i
   for (const Constraint* c : m_constraints) c->AddToLHS(&triplets);
+  if (m_drag_constraint) m_drag_constraint->AddToLHS(&triplets);
 
   SparseMatrix lhs(n, n);
   lhs.setFromTriplets(triplets.begin(), triplets.end());  // Duplicates are summed.
@@ -82,7 +87,30 @@ void Simulation::RebuildSystemMatrix() {
   if (!m_system_ready) std::cerr << "Simulation: system matrix factorization failed" << std::endl;
 }
 
+void Simulation::BeginDrag(unsigned int particle, const EigenVector3& target) {
+  if (particle >= NumParticles()) return;
+  delete m_drag_constraint;
+  m_drag_constraint = new AttachmentConstraint(&m_stiffness_drag, particle, target);
+  RebuildSystemMatrix();
+}
+
+void Simulation::UpdateDrag(const EigenVector3& target) {
+  if (m_drag_constraint) m_drag_constraint->SetFixedPoint(target);
+}
+
+void Simulation::EndDrag() {
+  if (!m_drag_constraint) return;
+  delete m_drag_constraint;
+  m_drag_constraint = nullptr;
+  RebuildSystemMatrix();
+}
+
+int Simulation::DraggedParticle() const {
+  return m_drag_constraint ? static_cast<int>(m_drag_constraint->GetConstrainedVertexIndex()) : -1;
+}
+
 void Simulation::Reset() {
+  EndDrag();
   m_positions = m_initial_positions;
   m_velocities.setZero(m_positions.rows(), 3);
   m_time_accumulator = 0.0;
@@ -115,6 +143,7 @@ void Simulation::Step() {
     // loop is what would move to a GPU kernel).
     b = b0;
     for (const Constraint* c : m_constraints) c->AddToRHS(x, &b);
+    if (m_drag_constraint) m_drag_constraint->AddToRHS(x, &b);
     // Global step: same prefactored matrix for x, y and z.
     x = m_llt.solve(b);
   }

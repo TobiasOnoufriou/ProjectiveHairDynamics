@@ -4,10 +4,17 @@
 #include "GLCore/Core/Input.h"
 #include "GLCore/Core/KeyCodes.h"
 
+#include <glm/gtc/constants.hpp>
+
 namespace GLCore::Utils {
 
 	PerspectiveCameraController::PerspectiveCameraController(float aspectRatio, bool rotation)
-		: m_AspectRatio(aspectRatio), m_Camera(45, m_AspectRatio, -1.0f, 1.0f), m_Rotation(rotation)
+		: m_AspectRatio(aspectRatio), m_Camera(kFovDegrees, m_AspectRatio, kNearClip, kFarClip), m_Rotation(rotation)
+	{
+    UpdateOrientation();
+	}
+
+	void PerspectiveCameraController::UpdateOrientation()
 	{
     m_Camera.SetDirection(glm::vec3{
       cos(vertical_angle_) * sin(horizontal_angle_),
@@ -16,9 +23,9 @@ namespace GLCore::Utils {
     );
 
     m_Camera.SetRight(glm::vec3{
-     sin(horizontal_angle_ - 3.14f / 2.0f),
+     sin(horizontal_angle_ - glm::half_pi<float>()),
      0,
-     cos(horizontal_angle_ - 3.14f / 2.0f)
+     cos(horizontal_angle_ - glm::half_pi<float>())
     });
 
     m_Camera.SetUp(glm::cross(m_Camera.GetRight(), m_Camera.GetDirection()));
@@ -44,23 +51,26 @@ namespace GLCore::Utils {
       m_CameraPosition -= m_Camera.GetDirection() * m_CameraTranslationSpeed * float(ts);
 		}
 
-    if (Input::IsKeyPressed(HZ_KEY_LEFT_ALT)) {
-      horizontal_angle_ += mouse_speed_ * float(1280 / 2 - Input::GetMouseX());
-      vertical_angle_ += mouse_speed_ * float(720 / 2 - Input::GetMouseY());
-
-      m_Camera.SetDirection(glm::vec3{
-        cos(vertical_angle_) * sin(horizontal_angle_),
-        sin(vertical_angle_),
-        cos(vertical_angle_) * cos(horizontal_angle_) }
-      );
-
-      m_Camera.SetRight(glm::vec3{
-        sin(horizontal_angle_ - 3.14f / 2.0f),
-        0,
-        cos(horizontal_angle_ - 3.14f / 2.0f)
-        });
-
-      m_Camera.SetUp(glm::cross(m_Camera.GetRight(), m_Camera.GetDirection()));
+    // Mouse look: rotate by how far the cursor moved since last frame.
+    {
+      const bool wants_look = !m_MouseLookBlocked &&
+        (m_MouseLookMode == MouseLookMode::Always || Input::IsKeyPressed(HZ_KEY_LEFT_ALT));
+      const float mx = Input::GetMouseX(), my = Input::GetMouseY();
+      if (wants_look) {
+        if (m_MouseLookActive) {
+          const float rad_per_px = glm::radians(m_MouseSensitivity);
+          const float dy = (my - m_LastMouseY) * (m_InvertY ? -1.0f : 1.0f);
+          horizontal_angle_ -= rad_per_px * (mx - m_LastMouseX);
+          vertical_angle_ -= rad_per_px * dy;
+          // Stop just short of straight up/down so the view never flips.
+          const float limit = glm::radians(89.0f);
+          vertical_angle_ = glm::clamp(vertical_angle_, -limit, limit);
+          UpdateOrientation();
+        }
+      }
+      m_MouseLookActive = wants_look;
+      m_LastMouseX = mx;
+      m_LastMouseY = my;
     }
 
 		if (m_Rotation)
@@ -94,8 +104,18 @@ namespace GLCore::Utils {
     return false;
 	}
 
+	void PerspectiveCameraController::SetViewportSize(uint32_t width, uint32_t height)
+	{
+		if (width == 0 || height == 0) return;  // Minimised.
+		m_ViewportWidth = width;
+		m_ViewportHeight = height;
+		m_AspectRatio = (float)width / (float)height;
+		m_Camera.SetProjection(kFovDegrees, m_AspectRatio, kNearClip, kFarClip);
+	}
+
 	bool PerspectiveCameraController::OnWindowResized(WindowResizeEvent& e)
   {
+    SetViewportSize(e.GetWidth(), e.GetHeight());
     return false;
 	}
 

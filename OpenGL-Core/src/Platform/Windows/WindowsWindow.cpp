@@ -46,6 +46,8 @@ namespace GLCore {
 			s_GLFWInitialized = true;
 		}
 
+		// Open maximised so the window fills the screen (minus the taskbar).
+		glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
 		m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
 
 		glfwMakeContextCurrent(m_Window);
@@ -56,6 +58,16 @@ namespace GLCore {
 		LOG_INFO("  Vendor: {0}", glGetString(GL_VENDOR));
 		LOG_INFO("  Renderer: {0}", glGetString(GL_RENDERER));
 		LOG_INFO("  Version: {0}", glGetString(GL_VERSION));
+
+		// The real size after maximising, and a viewport covering the whole framebuffer.
+		{
+			int w, h, fb_w, fb_h;
+			glfwGetWindowSize(m_Window, &w, &h);
+			glfwGetFramebufferSize(m_Window, &fb_w, &fb_h);
+			m_Data.Width = (uint32_t)w;
+			m_Data.Height = (uint32_t)h;
+			glViewport(0, 0, fb_w, fb_h);
+		}
 
 		glfwSetWindowUserPointer(m_Window, &m_Data);
 		SetVSync(true);
@@ -69,6 +81,13 @@ namespace GLCore {
 
 			WindowResizeEvent event(width, height);
 			data.EventCallback(event);
+		});
+
+		// Keep the GL viewport in sync with the framebuffer (in pixels, which can
+		// differ from the window size on high-DPI displays).
+		glfwSetFramebufferSizeCallback(m_Window, [](GLFWwindow* window, int width, int height)
+		{
+			if (width > 0 && height > 0) glViewport(0, 0, width, height);
 		});
 
 		glfwSetWindowCloseCallback(m_Window, [](GLFWwindow* window)
