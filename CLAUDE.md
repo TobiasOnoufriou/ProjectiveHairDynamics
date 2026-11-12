@@ -15,9 +15,14 @@ The hair solver must keep working as a regression scene while the muscle work la
 - `OpenGL-Core/` - engine framework (window, layers, events, ImGui, camera, shaders). Rarely changed.
   Vendored deps live in `OpenGL-Core/vendor/` (GLFW, Glad, imgui, glm, eigen, assimp, spdlog). Do not edit vendor code.
 - `OpenGL-Sandbox/src/` - the actual project:
-  - `Simulation.h/.cpp` - PD solver (local/global loop, prefactored `SimplicialLLT`, fixed time step with accumulator).
-  - `Constraint.h` - PD constraints (`AttachmentConstraint`, `SpringConstraint`). Each adds `w*G^T G` to the LHS and `w*G^T p` to the RHS.
-  - `SandboxLayer.*` - scene setup, mouse picking/dragging, ImGui panels.
+  - `PDSolver.h/.cpp` - generic PD solver: per-vertex lumped masses, exact Dirichlet (fixed) vertices eliminated
+    from the system, constraint list, prefactored `SimplicialLLT` of the free block, fixed time step with accumulator,
+    per-step stats (ms/step, energy per iteration, max strain).
+  - `Constraint.h` - PD constraints (`AttachmentConstraint` for soft drag, `SpringConstraint`). Each adds `w*G^T G` to the
+    LHS, `w*G^T p` to the RHS, and returns its energy `w/2 ||Gx - p||^2` from `AddToRHS`.
+  - `Scene.h`, `HairScene.*` - scene builders that fill a `PDSolver` and expose tunable `SceneParam`s (no ImGui, so
+    they are testable headless). New scenes are registered in `kScenes` in `SandboxLayer.cpp`.
+  - `SandboxLayer.*` - scene selection, mouse picking/dragging, ImGui panels (Simulation, Metrics, Camera).
   - `StrandRenderer.*` - draws strands as GL lines. `Mesh.*`, `ModelLoader.*` - assimp model loading/rendering.
   - `math_headers.h` - Eigen typedefs (`ScalarType = double`, `EigenMatrix3x` = N x 3, row i = particle i).
 - `OpenGL-Tests/` - googletest project. Compiles `Simulation.cpp` and `math_headers.cpp` directly (no GL context),
@@ -66,10 +71,8 @@ Use Release for any performance measurement; Eigen in Debug is 10-50x slower.
 
 ## Known issues
 
-1. Simulation uses a single uniform particle mass. Volumetric meshes need lumped per-vertex mass (from tet volume x density).
-2. Damping (`v *= 1 - c`) also damps rigid motion. Replace with damping relative to the mean velocity, or a Rayleigh-style term.
-3. Root/bone pinning uses very stiff soft springs (1e6). Prefer eliminating fixed vertices from the system (Dirichlet).
-4. Existing code predates the cpplint workflow and may still have style violations.
+1. Damping (`v *= 1 - c`) also damps rigid motion. Replace with damping relative to the mean velocity, or a Rayleigh-style term.
+2. Existing code predates the cpplint workflow and may still have style violations.
 
 ## Roadmap: hair to muscle
 
@@ -79,12 +82,12 @@ Work through phases in order. Each phase should leave the app building, running 
 - [x] Untrack Glad build outputs; fix Mesh slab test, include case, camera by `const&`, remove dead PD fields; README.
 - [x] `OpenGL-Tests` compiles the solver headlessly with passing tests; CI builds and runs them; cpplint scoped to our sources.
 
-### Phase 1: Generic solver
-- [ ] Split `Simulation` into a reusable `PDSolver` (positions, per-vertex masses, constraint list, factorization,
+### Phase 1: Generic solver (done)
+- [x] Split `Simulation` into a reusable `PDSolver` (positions, per-vertex masses, constraint list, factorization,
       step) and scene builders (`HairScene`, later `MuscleScene`). Keep the hair demo as a selectable scene.
-- [ ] Per-vertex mass (issue 8); exact Dirichlet pinning (issue 10).
-- [ ] ImGui metrics: ms/step, total PD energy per iteration, max strain/volume error.
-- [ ] Unit tests: rest state has zero energy; energy never increases across local/global iterations.
+- [x] Per-vertex mass; exact Dirichlet pinning (`PDSolver::SetFixed`, moved via `SetFixedTarget`, RHS only).
+- [x] ImGui metrics: ms/step, total PD energy per iteration, max strain/volume error.
+- [x] Unit tests: rest state has zero energy; energy never increases across local/global iterations.
 
 ### Phase 2: Tetrahedral meshes
 - [ ] Procedural tet beam (box split into tets). No external dependency, used for tests.

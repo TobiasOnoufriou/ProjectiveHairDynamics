@@ -3,11 +3,29 @@
 #include "glm/gtx/rotate_vector.hpp"
 #include "GLCore/Core/Input.h"
 #include "GLCore/Core/MouseButtonCodes.h"
+#include "HairScene.h"
 
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
+#include <memory>
 
 using namespace GLCore;
 using namespace GLCore::Utils;
+
+namespace {
+
+// Selectable scenes. MuscleScene etc. get added here.
+struct SceneEntry {
+  const char* name;
+  std::unique_ptr<Scene> (*create)();
+};
+const SceneEntry kScenes[] = {
+  {"Hair", []() -> std::unique_ptr<Scene> { return std::make_unique<HairScene>(); }},
+};
+constexpr int kNumScenes = static_cast<int>(sizeof(kScenes) / sizeof(kScenes[0]));
+
+}  // namespace
 
 SandboxLayer::SandboxLayer(uint32_t w, uint32_t h)
   : camera_controller_(h > 0 ? (float)w / (float)h : 16.0f / 9.0f), width(w), height(h)
@@ -44,23 +62,30 @@ void SandboxLayer::OnAttach()
   line_ = std::make_unique<LineTools>(this->camera_controller_.GetCamera().GetPosition());
   mesh_ = std::move(model_loader_->LoadModel("src/assets/monkey.obj"));
   plane_ = std::move(model_loader_->LoadModel("src/assets/Plane.obj"));
-  m_sim = std::make_unique<Simulation>();
-  {
-    // Test scene: a 5x5 patch of strands, starting horizontal so they swing
-    // down under gravity and come to rest hanging.
-    std::vector<EigenVector3> roots;
-    for (int i = 0; i < 5; ++i)
-      for (int j = 0; j < 5; ++j)
-        roots.emplace_back(-0.4 + 0.2 * i, 1.5, -0.4 + 0.2 * j);
-    m_sim->InitHairStrands(roots, EigenVector3(1.0, 0.0, 0.0), 20, 0.05);
-  }
+  m_sim = std::make_unique<PDSolver>();
+  m_sim->m_track_energy = true;
   m_strand_renderer = std::make_unique<StrandRenderer>();
-  m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
+  LoadScene(0);
 
   this->kScene = model_loader_->getScene();
 
   this->mesh_->TranslateShape(glm::vec3(0.0f, 0.0f, 0.0f));
   plane_->TranslateShape(glm::vec3(0.0f, -1.0f, 0.0f));
+}
+
+void SandboxLayer::LoadScene(int index)
+{
+  if (index < 0 || index >= kNumScenes) return;
+  m_sim->EndDrag();
+  m_scene_index = index;
+  m_scene = kScenes[index].create();
+  m_scene->Build(m_sim.get());
+  UploadStrands();
+}
+
+void SandboxLayer::UploadStrands()
+{
+  m_strand_renderer->Upload(m_sim->GetPositions(), m_scene->LineIndices());
 }
 
 void SandboxLayer::OnDetach()
@@ -163,16 +188,22 @@ void SandboxLayer::OnUpdate(Timestep ts)
 
   if (m_run_sim) {
     m_sim->Update(ts.GetSeconds());
-    m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
+    UploadStrands();
   }
+  // Exponential moving average so the ms/step readout is legible.
+  m_avg_step_ms += 0.05 * (m_sim->GetStats().step_ms - m_avg_step_ms);
   m_strand_renderer->Draw(camera_controller_);
 }
 
 void SandboxLayer::OnImGuiRender() {
-  ImGui::Begin("Hair Simulation");
+  ImGui::Begin("Projective Dynamics");
   if (ImGui::BeginTabBar("Tabs")) {
     if (ImGui::BeginTabItem("Simulation")) {
       DrawSimulationTab();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Metrics")) {
+      DrawMetricsTab();
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Camera")) {
@@ -203,15 +234,22 @@ void SandboxLayer::DrawCameraTab() {
 }
 
 void SandboxLayer::DrawSimulationTab() {
+  if (ImGui::BeginCombo("Scene", kScenes[m_scene_index].name)) {
+    for (int i = 0; i < kNumScenes; ++i) {
+      if (ImGui::Selectable(kScenes[i].name, i == m_scene_index)) LoadScene(i);
+    }
+    ImGui::EndCombo();
+  }
+
   ImGui::Checkbox("Run", &m_run_sim);
   if (ImGui::Button("Step") && !m_run_sim) {
     m_sim->Step();
-    m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
+    UploadStrands();
   }
   ImGui::SameLine();
   if (ImGui::Button("Reset")) {
     m_sim->Reset();
-    m_strand_renderer->Upload(m_sim->GetPositions(), m_sim->GetSegmentIndices());
+    UploadStrands();
   }
 
   ImGui::SliderInt("Iterations", &m_sim->m_iterations_per_step, 1, 50);
@@ -221,22 +259,58 @@ void SandboxLayer::DrawSimulationTab() {
   if (ImGui::SliderFloat("Gravity", &gravity, 0.0f, 20.0f)) m_sim->m_gravity_constant = gravity;
 
   // Stiffness changes the system matrix, so it has to be refactored.
-  bool rebuild = false;
-  float stretch = static_cast<float>(m_sim->m_stiffness_stretch);
-  if (ImGui::SliderFloat("Stretch stiffness", &stretch, 1e3f, 1e7f, "%.0f", 4.0f)) {
-    m_sim->m_stiffness_stretch = stretch;
-    rebuild = true;
-  }
-  float bending = static_cast<float>(m_sim->m_stiffness_bending);
-  if (ImGui::SliderFloat("Bending stiffness", &bending, 1.0f, 1e5f, "%.0f", 4.0f)) {
-    m_sim->m_stiffness_bending = bending;
-    rebuild = true;
-  }
+  bool rebuild_matrix = false;
+  bool rebuild_scene = false;
   float drag = static_cast<float>(m_sim->m_stiffness_drag);
   if (ImGui::SliderFloat("Mouse drag stiffness", &drag, 1e2f, 1e6f, "%.0f", 4.0f)) {
     m_sim->m_stiffness_drag = drag;
-    rebuild = true;
+    rebuild_matrix = true;
   }
-  if (rebuild) m_sim->RebuildSystemMatrix();
-  ImGui::Text(m_sim->IsDragging() ? "Dragging particle %d" : "Left-click a strand to drag it", m_sim->DraggedParticle());
+
+  ImGui::Separator();
+  ImGui::Text("%s parameters", m_scene->Name());
+  for (const SceneParam& p : m_scene->Params()) {
+    float v = static_cast<float>(*p.value);
+    const bool changed = ImGui::SliderFloat(p.name, &v, p.min, p.max, p.logarithmic ? "%.3g" : "%.3f",
+                                            p.logarithmic ? 4.0f : 1.0f);
+    if (changed) *p.value = v;
+    if (changed && p.effect == SceneParam::kSystemMatrix) rebuild_matrix = true;
+    // Rebuilding the scene resets the pose, so wait until the slider is released.
+    if (p.effect == SceneParam::kRebuildScene && ImGui::IsItemDeactivatedAfterEdit()) rebuild_scene = true;
+  }
+  if (rebuild_scene) {
+    m_sim->EndDrag();
+    m_scene->Build(m_sim.get());
+    UploadStrands();
+  } else if (rebuild_matrix) {
+    m_sim->RebuildSystemMatrix();
+  }
+  ImGui::Text(m_sim->IsDragging() ? "Dragging vertex %d" : "Left-click a strand to drag it", m_sim->DraggedVertex());
+}
+
+void SandboxLayer::DrawMetricsTab() {
+  const PDStepStats& stats = m_sim->GetStats();
+  ImGui::Text("Vertices: %u (%u fixed)   Constraints: %zu", m_sim->NumVertices(), m_sim->NumFixed(),
+              m_sim->NumConstraints());
+  ImGui::Text("Step: %.3f ms (avg %.3f ms)", stats.step_ms, m_avg_step_ms);
+  ImGui::Text("Max strain: %.3e", stats.max_strain);
+
+  ImGui::Checkbox("Track energy per iteration", &m_sim->m_track_energy);
+  if (m_sim->m_track_energy && !stats.energy.empty()) {
+    // Plot E(x_k) - E_final on a log scale so convergence is visible across
+    // many orders of magnitude.
+    const ScalarType e_final = stats.energy.back();
+    m_energy_plot.clear();
+    for (ScalarType e : stats.energy) {
+      m_energy_plot.push_back(static_cast<float>(std::log10(std::max(e - e_final, 1e-12))));
+    }
+    ImGui::Text("Energy: %.6e -> %.6e", stats.energy.front(), e_final);
+    ImGui::PlotLines("log10(E_k - E_final)", m_energy_plot.data(), static_cast<int>(m_energy_plot.size()),
+                     0, nullptr, -12.0f, FLT_MAX, ImVec2(0, 80));
+    bool monotone = true;
+    for (size_t k = 1; k < stats.energy.size(); ++k) {
+      monotone &= stats.energy[k] <= stats.energy[k - 1] * (1.0 + 1e-9) + 1e-12;
+    }
+    if (!monotone) ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Energy increased during the last step");
+  }
 }

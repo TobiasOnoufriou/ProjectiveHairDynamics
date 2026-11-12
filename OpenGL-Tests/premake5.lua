@@ -16,8 +16,11 @@ project "OpenGL-Tests"
     "src/**.cpp",
     "vendor/googletest/src/gtest-all.cc",
     -- Simulation code under test.
-    "../OpenGL-Sandbox/src/Simulation.h",
-    "../OpenGL-Sandbox/src/Simulation.cpp",
+    "../OpenGL-Sandbox/src/PDSolver.h",
+    "../OpenGL-Sandbox/src/PDSolver.cpp",
+    "../OpenGL-Sandbox/src/Scene.h",
+    "../OpenGL-Sandbox/src/HairScene.h",
+    "../OpenGL-Sandbox/src/HairScene.cpp",
     "../OpenGL-Sandbox/src/Constraint.h",
     "../OpenGL-Sandbox/src/math_headers.h",
     "../OpenGL-Sandbox/src/math_headers.cpp"

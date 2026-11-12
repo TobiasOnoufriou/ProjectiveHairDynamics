@@ -5,7 +5,8 @@
 
 #include "ModelLoader.hpp"
 #include "LineTools.h"
-#include "Simulation.h"
+#include "PDSolver.h"
+#include "Scene.h"
 #include "StrandRenderer.h"
 
 
@@ -28,7 +29,11 @@ private:
   glm::vec3 MouseToWorld(float mouse_x, float mouse_y, float ndc_depth) const;
 
   void DrawSimulationTab();
+  void DrawMetricsTab();
   void DrawCameraTab();
+  // Instantiates scene `index` from the scene list and builds it into m_sim.
+  void LoadScene(int index);
+  void UploadStrands();
 
   static constexpr float kPickRadiusPx = 15.0f;
   float m_drag_ndc_depth = 0.0f;  // Keeps the dragged particle at a constant depth from the camera.
@@ -38,7 +43,12 @@ private:
   std::unique_ptr<Mesh> plane_;
   std::unique_ptr<LineTools> line_;
 
-  std::unique_ptr<Simulation> m_sim;
+  std::unique_ptr<PDSolver> m_sim;
+  std::unique_ptr<Scene> m_scene;
+  int m_scene_index = 0;
+  // Smoothed ms/step and the energy curve of the last step, for the metrics tab.
+  double m_avg_step_ms = 0.0;
+  std::vector<float> m_energy_plot;
   std::unique_ptr<StrandRenderer> m_strand_renderer;
   bool m_run_sim = true;
 
