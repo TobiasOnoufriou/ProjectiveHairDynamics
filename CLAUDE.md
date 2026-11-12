@@ -183,9 +183,83 @@ Work through phases in order. Each phase should leave the app building, running 
     with contact loses up to ~15% volume and inverts some crushed tets; the Phase 4 muscle tests therefore run
     with bone contact off. Box bones folded the tets over their edges; capsules drape better.
 
+### Phase 7: Asset pipeline (Blender -> baked asset -> running sim)
+Goal: an arm modelled in Blender, exported as `.glb`, baked by `pdbake` and animated in the sandbox with simulated
+muscles and a skin corrective, with no manual steps beyond tagging objects. Work it in chunks, one session each,
+committing and updating this file at the end of each: **7a** (7.1, 7.10 format) first; then **7b** (7.2, 7.3, 7.13),
+**7c** (7.4) and **7d** (7.5-7.9), which are independent; then **7e** (7.10 tool, 7.11, 7.12).
+
+Authoring conventions (Blender side): objects carry a custom property `pd_role = "muscle" | "bone" | "skin"`
+(exported as glTF `extras`); muscles may override `pd_stiffness`, `pd_max_contraction`, `pd_resolution`. Optional
+vertex groups on muscles: `pd_origin` / `pd_insertion` (attachment regions), `pd_tendon` (0-1 tendon weight),
+`pd_activation_group`. Bone meshes are rigidly parented to armature bones. Apply scale and modifiers before export.
+Everything is converted to one internal convention at import: meters, Y-up, right-handed (glTF's own).
+
+- [ ] 7.1 Core library split: solver, mesh, constraint and collider code into a GL-free `PD-Core` static library
+      linked by the sandbox, the tests and `pdbake`. Keep its public headers small (future SDK C API base).
+- [ ] 7.2 glTF import: meshes, armature, skin weights, animations, `extras`. Prefer cgltf (MIT, single header) over
+      the vendored assimp unless assimp exposes `extras` cleanly.
+- [ ] 7.3 Validation: watertight, no self-intersection, no muscle-bone intersection at rest, scale sanity, degenerate
+      triangles. Errors name the Blender object and suggest a fix ("Apply Scale", "mesh has 3 holes").
+- [ ] 7.4 Tetrahedralizer: surface -> tets with a resolution parameter, by isosurface stuffing on a BCC lattice
+      (Labelle and Shewchuk 2007): bounded dihedral angles, no dependency, no licence issue (TetGen is AGPL; keep the
+      `.node/.ele` loader but never ship TetGen). fTetWild (MPL-2.0) only as an optional fallback for bad meshes.
+      Tests: tet volume ~ surface volume, all tets positive, minimum dihedral angle bound.
+- [ ] 7.5 Render-mesh embedding: each render vertex -> (tet, 4 barycentric weights); vertices outside use the nearest
+      tet with clamped weights. Runtime deform + normals. Tests: zero displacement at rest, rigid tets -> rigid mesh.
+- [ ] 7.6 Attachments: auto pins by distance to bone meshes, vertex groups override. Stored as bone name + bone-local
+      position; runtime `SetFixedTarget(bone_world * local)` (RHS only).
+- [ ] 7.7 Fibre field: Laplace solve on the tets (0 at origin, 1 at insertion), fibre = normalised gradient per tet
+      (Choi and Blemker 2013; Saito et al. 2015). Test: matches the hand-built spindle fibres.
+- [ ] 7.8 Materials: tendon vs belly stiffness per tet from `pd_tendon`, else from the fibre-field coordinate.
+- [ ] 7.9 Colliders: fit a capsule per bone mesh (principal axis + radius), attached to its armature bone.
+- [ ] 7.10 `.pdasset`: versioned binary (header with version, units, axes; tets, rest positions, attachments, fibres,
+      materials, embedding, colliders, skin bindings), references glTF bones by name; round-trip test.
+      `pdbake input.glb -o out.pdasset [--resolution]` CLI with a report (tet count, pins per bone, warnings).
+- [ ] 7.11 Cheap skin corrective: bake each skin vertex to its nearest muscle-surface point plus a falloff; runtime
+      skin = LBS position + falloff * (simulated muscle point - skinned rest muscle point). Test: a muscle at rest
+      relative to its bones leaves the skin equal to LBS. (A simulated fat layer is out of scope; see stretch goals.)
+- [ ] 7.12 Sandbox `AssetScene`: loads `.glb` + `.pdasset`, plays the glTF animation, poses bones/colliders, runs
+      the sim, draws bones, muscles (visible-muscle mode) and skin (cheap-skin mode) with toggles. Activation per
+      muscle from a slider, an animated custom property or a joint-angle curve. Several muscles in one solver sharing
+      bones (biceps + triceps); without muscle-muscle contact they may overlap.
+- [ ] 7.13 Test asset: a Blender Python script that builds the arm (bones, biceps, triceps, skin, curl animation),
+      plus the exported `.glb` checked in so CI never needs Blender. If Blender is unavailable, generate the `.glb`
+      from the procedural muscle code instead.
+
+### Phase 8: Game budget, robustness, comparison
+Goal: <= 1 ms per hero character per frame on 4 threads at 60 fps (visible muscle + cheap skin), no blow-ups on
+gameplay animation, and side-by-side footage against existing techniques. Starting point (Phase 5): ~11 us per tet
+per frame serial at h = 1/60, 10 iterations, double precision; the per-tet SVD dominates.
+
+- [ ] 8.1 `GameBudget` benchmark on the Phase 7 arm asset (ms/frame vs tets, iterations, threads). Baseline first;
+      every later item is measured against it.
+- [ ] 8.2 `ScalarType = float` builds and passes the tests. Watch the LLT with stiff contact weights (1e5); fallback:
+      factorize in double, everything else in float.
+- [ ] 8.3 SIMD 3x3 SVD (McAdams et al. 2011), accuracy vs JacobiSVD on simulation data, including near-repeated
+      singular values (where `computeDirect` failed).
+- [ ] 8.4 Replace OpenMP with a host-supplied `parallel_for` callback (serial / built-in pool fallback) so Unreal's
+      task graph, Unity jobs and Godot's WorkerThreadPool can drive the solver.
+- [ ] 8.5 Quality presets: tets per muscle (200-400), iterations (5-10 with Anderson), contact settings; bake-time
+      warning when an asset exceeds the budget.
+- [ ] 8.6 LOD: full sim / reduced rate (30 Hz, interpolated) / off (plain LBS), with blending and a clean wake-up
+      (reset to the skinned pose, zero relative velocity).
+- [ ] 8.7 Robustness: teleport / large-jump reset, NaN and extreme-strain guards with per-frame fallback to LBS.
+      Fix known issue 1 (damping must be relative to bone motion or a running character's muscles lag).
+- [ ] 8.8 Art controls per muscle: corrective strength, jiggle amount, activation scale, max bulge clamp (RHS or
+      post-process only, never the matrix).
+- [ ] 8.9 Comparison scene: same arm as LBS, LBS + jiggle bone, LBS + PD muscles + cheap skin; clips: slow curl,
+      fast punch, holding a weight (same pose, different activation), landing. Capture video and timings.
+- Positioning: complement existing skinning/correctives (keep them for joint folds and art-directed poses); PD adds
+  activation-driven bulge, secondary motion, volume preservation and contact, which pose-driven methods cannot.
+
 ### Stretch goals
 - Quasi-Newton hyperelastic materials (Liu, Bouaziz, Kavan 2017). GPU local step / Jacobi global solve.
-  Real anatomical meshes. Multiple muscles with shared bones.
+  Real anatomical meshes.
+- Engine SDK (Godot, Unity, Unreal) over a plain C API on `PD-Core`, loading `.pdasset`.
+- Simulated fat layer (tets between skin, muscles and bones): ~1-3 ms GPU per hero character, needs self contact.
+- ML-trained deformer: simulate offline with this solver, train pose (+ activation, velocity) -> PCA skin
+  correction, evaluate at ~0.1-0.5 ms at runtime (as Ziva Real-Time and Unreal's ML Deformer do).
 
 ## References
 
